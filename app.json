@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "SabuScan",
-    "slug": "SabuScan",
+    "name": "PDFScan",
+    "slug": "PDFScan",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -55,7 +55,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "e91741be-f126-43ff-a07e-a9ed25d48059"
+        "projectId": "de763898-1f45-4423-ad11-1d5185e03690"
       }
     }
   }
