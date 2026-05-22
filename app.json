@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "PDFScan",
-    "slug": "PDFScan",
+    "name": "FreeAIDocumentScanner PRO",
+    "slug": "FreeAIDocumentScannerPRO",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -16,7 +16,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.sabu.scanner",
       "infoPlist": {
-        "NSUserTrackingUsageDescription": "This identifier will be used to deliver personalized ads to you."
+        "NSUserTrackingUsageDescription": "This identifier will be used to deliver personalized ads to you.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -25,7 +26,10 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": false,
-      "package": "com.sabu.scanner"
+      "package": "com.sabu.scanner",
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -45,17 +49,33 @@
         }
       ],
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "The app accesses your photos to let you import existing documents and convert them to PDFs.",
+          "cameraPermission": "The app needs camera access to scan documents.",
+          "limits": {
+            "video": false
+          }
+        }
+      ],
+      [
         "expo-build-properties",
         {
           "android": {
             "minSdkVersion": 24
           }
         }
+      ],
+      [
+        "expo-tracking-transparency",
+        {
+          "userTrackingPermission": "This identifier will be used to deliver personalized ads to you."
+        }
       ]
     ],
     "extra": {
       "eas": {
-        "projectId": "de763898-1f45-4423-ad11-1d5185e03690"
+        "projectId": "9a8625ef-2b70-4a51-ad81-e94663787198"
       }
     }
   }

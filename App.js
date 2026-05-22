@@ -33,6 +33,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as MediaLibrary from 'expo-media-library';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { InterstitialAd, AdEventType, TestIds, BannerAd, BannerAdSize } from 'react-native-google-mobile-ads';
+import { requestTrackingPermissionsAsync } from 'expo-tracking-transparency';
 
 // ------------------------------------------------------------------
 // Theme definitions (Dark and Light)
@@ -85,6 +87,21 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const BOTTOM_NAV_HEIGHT = Platform.OS === 'android' ? 88 : 78;
 const BOTTOM_NAV_PADDING = Platform.OS === 'android' ? 16 : 0;
 const SABU_DIR = FileSystem.documentDirectory + 'SabuScan/';
+
+// ------------------------------------------------------------------
+// Ad Unit IDs Configuration
+// ------------------------------------------------------------------
+const interstitialAdUnitId = __DEV__
+	? TestIds.INTERSTITIAL
+	: Platform.OS === 'ios'
+		? 'ca-app-pub-5117316644857484/4057157518'
+		: 'ca-app-pub-5117316644857484/8021075376';
+
+const bannerAdUnitId = __DEV__
+	? TestIds.BANNER
+	: Platform.OS === 'ios'
+		? 'ca-app-pub-5117316644857484/4277791009'
+		: 'ca-app-pub-5117316644857484/1211502322';
 
 // Helper to create dynamic styles
 const makeStyles = (theme) =>
@@ -890,6 +907,10 @@ export default function App() {
 		buttons: [],
 	});
 
+	// Interstitial ad state
+	const [interstitialAd, setInterstitialAd] = useState(null);
+	const [isAdLoaded, setIsAdLoaded] = useState(false);
+
 	const showThemedAlert = (
 		title,
 		message,
@@ -899,16 +920,67 @@ export default function App() {
 		setAlertVisible(true);
 	};
 
+	// ------------------------------------------------------------------
+	// Interstitial Ad Functions
+	// ------------------------------------------------------------------
+	const initializeAndLoadInterstitialAd = async () => {
+		try {
+			const ad = InterstitialAd.createForAdRequest(interstitialAdUnitId, {
+			
+equestNonPersonalizedAdsOnly: false,
+			});
+
+			ad.addAdEventListener(AdEventType.CLOSED, () => {
+				console.log('Interstitial ad closed');
+				setIsAdLoaded(false);
+				// Reload the ad for next time
+				ad.load();
+			});
+
+			ad.addAdEventListener(AdEventType.ERROR, (error) => {
+				console.log('Interstitial ad error:', error);
+				setIsAdLoaded(false);
+			});
+
+			ad.addAdEventListener(AdEventType.LOADED, () => {
+				console.log('Interstitial ad loaded');
+				setIsAdLoaded(true);
+			});
+
+			setInterstitialAd(ad);
+			await ad.load();
+		} catch (error) {
+			console.log('Error initializing interstitial ad:', error);
+		}
+	};
+
+	const showInterstitialAd = async () => {
+		try {
+			if (isAdLoaded && interstitialAd) {
+				await interstitialAd.show();
+			}
+		} catch (error) {
+			console.log('Error showing interstitial ad:', error);
+		}
+	};
+
 	// Use local format if on scan tab, else global
 	const activeFormat =
 		activeTab === 'scan' ? localExportFormat : globalExportFormat;
 
 	useEffect(() => {
 		(async () => {
+			// Request ATT permission on iOS before initializing ads
+			if (Platform.OS === 'ios') {
+				try {
+					await requestTrackingPermissionsAsync();
+				} catch (_) {}
+			}
 			try {
 				await MediaLibrary.requestPermissionsAsync();
 			} catch (_) {}
 			await loadLibraryFiles();
+			initializeAndLoadInterstitialAd();
 		})();
 	}, []);
 
@@ -1006,6 +1078,7 @@ export default function App() {
 					...prev,
 					...result.assets.map((a) => a.uri),
 				]);
+				await showInterstitialAd();
 			}
 		} catch (e) {
 			console.log('Gallery picker failed', e);
@@ -1258,6 +1331,7 @@ export default function App() {
 			setScannedImages([]);
 			setDocumentName('');
 			await loadLibraryFiles();
+			await showInterstitialAd();
 			setActiveTab('library');
 		} catch (err) {
 			console.error(err);
@@ -2664,6 +2738,18 @@ export default function App() {
 					{renderPreviewModal()}
 					{renderExportModal()}
 					{renderCustomAlert()}
+					<BannerAd
+						unitId={bannerAdUnitId}
+						size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
+						onAdFailedToLoad={(error) => console.log('Banner ad error:', error)}
+						onAdLoaded={() => console.log('Banner ad loaded')}
+						style={{
+							width: '100%',
+							backgroundColor: theme.surface,
+							borderTopWidth: 1,
+							borderTopColor: theme.surfaceHighlight,
+						}}
+					/>
 				</SafeAreaView>
 			</SafeAreaProvider>
 		</ThemeContext.Provider>
