@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "FreeAIDocumentScanner PRO",
-    "slug": "FreeAIDocumentScannerPRO",
+    "name": "PDFScan: Doc & File Scanner",
+    "slug": "pdf-document-file-scanner",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -28,7 +28,8 @@
       "edgeToEdgeEnabled": false,
       "package": "com.sabu.scanner",
       "permissions": [
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "com.google.android.gms.permission.AD_ID"
       ]
     },
     "web": {
@@ -75,7 +76,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "9a8625ef-2b70-4a51-ad81-e94663787198"
+        "projectId": "6d7e097f-d104-47d9-8075-11e25921f461"
       }
     }
   }
