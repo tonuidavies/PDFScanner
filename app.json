@@ -1,83 +1,76 @@
 {
-  "expo": {
-    "name": "PDFScan: Doc & File Scanner",
-    "slug": "pdf-document-file-scanner",
-    "version": "1.0.0",
-    "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
-    "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.sabu.scanner",
-      "infoPlist": {
-        "NSUserTrackingUsageDescription": "This identifier will be used to deliver personalized ads to you.",
-        "ITSAppUsesNonExemptEncryption": false
-      }
-    },
-    "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": false,
-      "package": "com.sabu.scanner",
-      "permissions": [
-        "android.permission.RECORD_AUDIO",
-        "com.google.android.gms.permission.AD_ID"
-      ]
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
-    "plugins": [
-      [
-        "react-native-document-scanner-plugin",
-        {
-          "cameraPermission": "We need camera access to scan your documents."
-        }
-      ],
-      [
-        "react-native-google-mobile-ads",
-        {
-          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
-          "iosAppId": "ca-app-pub-3940256099942544~1458002511"
-        }
-      ],
-      [
-        "expo-image-picker",
-        {
-          "photosPermission": "The app accesses your photos to let you import existing documents and convert them to PDFs.",
-          "cameraPermission": "The app needs camera access to scan documents.",
-          "limits": {
-            "video": false
-          }
-        }
-      ],
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "minSdkVersion": 24
-          }
-        }
-      ],
-      [
-        "expo-tracking-transparency",
-        {
-          "userTrackingPermission": "This identifier will be used to deliver personalized ads to you."
-        }
-      ]
-    ],
-    "extra": {
-      "eas": {
-        "projectId": "6d7e097f-d104-47d9-8075-11e25921f461"
-      }
-    }
-  }
+	"expo": {
+		"name": "PDFScan",
+		"slug": "pdf-document-file-scanner",
+		"version": "1.0.0",
+		"orientation": "portrait",
+		"icon": "./assets/icon.png",
+		"userInterfaceStyle": "light",
+		"newArchEnabled": true,
+		"splash": {
+			"image": "./assets/splash-icon.png",
+			"resizeMode": "contain",
+			"backgroundColor": "#ffffff"
+		},
+		"ios": {
+			"supportsTablet": true,
+			"bundleIdentifier": "com.sabu.scanner",
+			"infoPlist": {
+				"ITSAppUsesNonExemptEncryption": false
+			}
+		},
+		"android": {
+			"adaptiveIcon": {
+				"foregroundImage": "./assets/adaptive-icon.png",
+				"backgroundColor": "#ffffff"
+			},
+			"edgeToEdgeEnabled": false,
+			"package": "com.sabu.scanner",
+			"permissions": [
+				"android.permission.RECORD_AUDIO",
+				"com.google.android.gms.permission.AD_ID"
+			]
+		},
+		"web": {
+			"favicon": "./assets/favicon.png"
+		},
+		"plugins": [
+			[
+				"react-native-document-scanner-plugin",
+				{
+					"cameraPermission": "We need camera access to scan your documents."
+				}
+			],
+			[
+				"react-native-google-mobile-ads",
+				{
+					"androidAppId": "ca-app-pub-3940256099942544~3347511713",
+					"iosAppId": "ca-app-pub-3940256099942544~1458002511"
+				}
+			],
+			[
+				"expo-image-picker",
+				{
+					"photosPermission": "The app accesses your photos to let you import existing documents and convert them to PDFs.",
+					"cameraPermission": "The app needs camera access to scan documents.",
+					"limits": {
+						"video": false
+					}
+				}
+			],
+			[
+				"expo-build-properties",
+				{
+					"android": {
+						"minSdkVersion": 24
+					}
+				}
+			]
+		],
+		"extra": {
+			"eas": {
+				"projectId": "6d7e097f-d104-47d9-8075-11e25921f461"
+			}
+		}
+	}
 }
