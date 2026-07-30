@@ -940,8 +940,9 @@ export default function App() {
 	const [rewardedAd, setRewardedAd] = useState(null);
 	const [isRewardedLoaded, setIsRewardedLoaded] = useState(false);
 	const [adFreeUntil, setAdFreeUntil] = useState(0);
-	const [adFreeTick, setAdFreeTick] = useState(0);
-	const isAdFree = adFreeUntil > Date.now();
+	const [nowTs, setNowTs] = useState(Date.now());
+	const rewardedRetries = useRef(0);
+	const isAdFree = adFreeUntil > nowTs;
 
 	// OCR results
 	const [ocrResults, setOcrResults] = useState([]);
@@ -1015,11 +1016,13 @@ export default function App() {
 			});
 
 			ad.addAdEventListener(RewardedAdEventType.LOADED, () => {
+				rewardedRetries.current = 0;
 				setIsRewardedLoaded(true);
 			});
 
 			ad.addAdEventListener(RewardedAdEventType.EARNED_REWARD, () => {
 				setAdFreeUntil(Date.now() + AD_FREE_DURATION_MS);
+				setNowTs(Date.now());
 			});
 
 			ad.addAdEventListener(AdEventType.CLOSED, () => {
@@ -1030,6 +1033,19 @@ export default function App() {
 			ad.addAdEventListener(AdEventType.ERROR, (error) => {
 				console.log('Rewarded ad error:', error);
 				setIsRewardedLoaded(false);
+				// Retry with backoff. A brand-new rewarded unit very often
+				// returns no-fill on the first request, and reviewers test on
+				// throttled networks — without this the row would be stuck
+				// unavailable for the whole session.
+				if (rewardedRetries.current < 3) {
+					const delay = 5000 * 2 ** rewardedRetries.current;
+					rewardedRetries.current += 1;
+					setTimeout(() => {
+						try {
+							ad.load();
+						} catch (_) {}
+					}, delay);
+				}
 			});
 
 			setRewardedAd(ad);
@@ -1079,11 +1095,16 @@ export default function App() {
 		})();
 	}, []);
 
-	// Re-render once a minute while an ad-free session is running so the
-	// countdown stays accurate and ads reappear the moment it lapses.
+	// Tick while an ad-free session is running so the countdown stays accurate
+	// and ads reappear when it lapses. The interval stops itself at expiry —
+	// otherwise it would keep re-rendering the whole tree for the rest of the
+	// process lifetime.
 	useEffect(() => {
 		if (adFreeUntil <= Date.now()) return;
-		const timer = setInterval(() => setAdFreeTick((t) => t + 1), 30 * 1000);
+		const timer = setInterval(() => {
+			setNowTs(Date.now());
+			if (Date.now() >= adFreeUntil) clearInterval(timer);
+		}, 30 * 1000);
 		return () => clearInterval(timer);
 	}, [adFreeUntil]);
 
@@ -2366,7 +2387,7 @@ export default function App() {
 
 			{/* Opt-in only. Hidden entirely when no rewarded unit is configured
 			    for this platform. Nothing is gated behind it. */}
-			{adsReady && rewardedAdUnitId && (
+			{adsReady && rewardedAdUnitId && (isRewardedLoaded || isAdFree) && (
 				<>
 					<Text style={[styles.sectionTitle, { marginTop: 24 }]}>ADS</Text>
 					<View style={styles.card}>
@@ -2384,31 +2405,26 @@ export default function App() {
 								</Text>
 								<Text style={styles.mutedText}>
 									{isAdFree
-										? `${Math.max(1, Math.ceil((adFreeUntil - Date.now()) / 60000))} min remaining — thanks for the support`
-										: 'Optional: watch a short video to hide ads for a while'}
+										? `${Math.max(1, Math.ceil((adFreeUntil - nowTs) / 60000))} min remaining — thanks for the support`
+										: 'Optional: watch a short video to hide ads for this session'}
 								</Text>
 							</View>
 							{!isAdFree && (
 								<TouchableOpacity
 									onPress={watchRewardedAd}
-									disabled={!isRewardedLoaded}
 									style={{
 										paddingHorizontal: 14,
 										paddingVertical: 8,
 										borderRadius: 10,
-										backgroundColor: isRewardedLoaded
-											? theme.primaryTeal
-											: theme.surfaceHighlight,
+										backgroundColor: theme.primaryTeal,
 									}}>
 									<Text
 										style={{
-											color: isRewardedLoaded
-												? theme.background
-												: theme.textMuted,
+											color: theme.background,
 											fontWeight: '600',
 											fontSize: 13,
 										}}>
-										{isRewardedLoaded ? 'Watch' : 'Loading'}
+										Watch
 									</Text>
 								</TouchableOpacity>
 							)}

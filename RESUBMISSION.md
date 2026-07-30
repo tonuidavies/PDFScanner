@@ -158,21 +158,31 @@ The warning text itself says to ignore it when using the Expo config plugin, whi
 
 That value is still Google's **test** app ID, which is the AdMob change flagged above — but the wiring works.
 
-### Deferred to 1.0.1 — AdMob App ID
+### AdMob — iOS done, Android still on the test ID
 
-**Decision: shipping 1.0 with the test App ID.** Apple does not inspect AdMob IDs, so this does not affect review. Approval now is worth more than ad fill.
+**iOS is fully live:**
 
-`app.json` carries Google's **test** app ID:
+| Slot | Value |
+|---|---|
+| App ID | `ca-app-pub-5117316644857484~2716155688` |
+| Banner | `ca-app-pub-5117316644857484/6017408731` |
+| Interstitial | `ca-app-pub-5117316644857484/2596809566` |
+| Rewarded | `ca-app-pub-5117316644857484/4813266605` |
 
-```
-ca-app-pub-3940256099942544~1458002511   ← Google's public test publisher
-```
-
-…while your ad units belong to publisher `5117316644857484`. Requests will fail on publisher mismatch, so **you will earn nothing until 1.0.1**. The banner area stays blank; nothing crashes.
-
-**To fix in 1.0.1:** apps.admob.com → **Apps** → your app → **App settings**. The App ID is at the top and begins with `ca-app-pub-5117316644857484~`. Replace both `iosAppId` and `androidAppId` in the `react-native-google-mobile-ads` plugin block.
+**Android still carries Google's test App ID** (`ca-app-pub-3940256099942544~3347511713`). AdMob App IDs are per-platform, so the iOS one cannot be reused. Create the Android app at apps.admob.com, then replace `androidAppId` plus the Android banner/interstitial units. Android also has no rewarded unit yet — `rewardedAdUnitId` is `null` there and the Settings row hides itself rather than falling back to a test unit in production.
 
 > Do **not** delete `GADApplicationIdentifier` to "clean up". The Google Mobile Ads SDK aborts at launch if it is missing or blank, and that abort is a native exception no JavaScript `try/catch` can intercept. A wrong-but-well-formed ID is safe; an absent one is a launch crash.
+
+### Rewarded ads — opt-in only, by design
+
+Settings → **ADS** → "Hide ads for 30 minutes" → **Watch**. Nothing else triggers it.
+
+This shape was chosen deliberately for review safety:
+
+- **Nothing is gated behind it.** The reward *removes* ads; declining costs the user nothing. Gating a previously-free feature behind a video is a Guideline 3.1.1 problem.
+- **It never auto-plays.** The library's own documentation example calls `show()` inside the `LOADED` handler, which would play video unprompted — a 4.0 trap. The `LOADED` handler here only sets state.
+- **The row is hidden until an ad is actually loaded**, so reviewers never see a dead "Loading" button. On ERROR it retries three times with exponential backoff, since a brand-new rewarded unit almost always returns no-fill on its first request.
+- The ad-free window is in-memory, so it lasts the session — hence the wording "for this session" rather than a promise that survives a relaunch.
 
 ---
 
@@ -231,7 +241,30 @@ leaves the device. To test: Scan tab > scan or import a document
 containing text > tap OCR.
 ```
 
-### 4. Test before submitting
+### 4. Everything else App Store Connect needs
+
+**Blocking — submission won't go through without these:**
+
+- [ ] **iPad screenshots.** `supportsTablet: true`, so App Store Connect will not let you submit without at least one valid iPad screenshot. Canonical size is **13″ iPad Pro, 2064 × 2752** portrait (2048 × 2732 still accepted). Apple reviewed you on an iPad Air twice — they will test on iPad again.
+- [ ] **iPhone screenshots** at **6.9″, 1320 × 2868** (1290 × 2796 accepted as fallback). Dimensions must be exact — one pixel off is rejected at upload.
+- [ ] **Description, keywords, support URL** under App Information
+- [ ] **Age rating** questionnaire completed
+- [ ] **Pricing and Availability** set
+- [ ] **Build 12 selected** in the version's Build section — uploading it is not the same as attaching it
+- [ ] **App Privacy published** (section 1 above)
+
+**Already handled in code — don't re-answer these wrong:**
+
+- **Export compliance**: `ITSAppUsesNonExemptEncryption: false` is in `app.json`, so the encryption question is answered automatically at upload. If App Store Connect still asks, the answer is **No**.
+- **Sign-in required?** No. The app has no accounts. Leave demo credentials blank.
+
+**Worth a look given your history:**
+
+- **Description must not overclaim.** OCR is real now, so describing text extraction is fine. Avoid promising anything the build doesn't do — that's Guideline 2.3.1, the same trap the fake OCR was.
+- **Screenshots must show the actual app.** No mockups of features that don't exist.
+- `orientation` is `"default"` and `UIRequiresFullScreen` is `false`, so on iPad the app must work in **all four orientations and in Split View**. Rotate it and drag it into Split View on a real iPad before you submit.
+
+### 5. Test before submitting
 
 Install the production build on a **physical device** via TestFlight and confirm:
 
