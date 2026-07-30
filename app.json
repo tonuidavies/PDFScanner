@@ -32,9 +32,9 @@
 			"permissions": [
 				"android.permission.CAMERA",
 				"android.permission.READ_EXTERNAL_STORAGE",
-				"android.permission.WRITE_EXTERNAL_STORAGE",
-				"com.google.android.gms.permission.AD_ID"
-			]
+				"android.permission.WRITE_EXTERNAL_STORAGE"
+			],
+			"blockedPermissions": ["com.google.android.gms.permission.AD_ID"]
 		},
 
 		"web": {
@@ -53,7 +53,7 @@
 				"react-native-google-mobile-ads",
 				{
 					"androidAppId": "ca-app-pub-3940256099942544~3347511713",
-					"iosAppId": "ca-app-pub-3940256099942544~1458002511"
+					"iosAppId": "ca-app-pub-5117316644857484~2716155688"
 				}
 			],
 
@@ -61,7 +61,8 @@
 				"expo-image-picker",
 				{
 					"photosPermission": "The app accesses your photos to let you import existing documents and convert them to PDFs.",
-					"cameraPermission": "The app needs camera access to scan documents."
+					"cameraPermission": "The app needs camera access to scan documents.",
+					"microphonePermission": false
 				}
 			],
 

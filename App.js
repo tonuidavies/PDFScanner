@@ -33,8 +33,20 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as MediaLibrary from 'expo-media-library';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { InterstitialAd, AdEventType, TestIds, BannerAd, BannerAdSize } from 'react-native-google-mobile-ads';
-import { requestTrackingPermissionsAsync } from 'expo-tracking-transparency';
+import mobileAds, {
+	InterstitialAd,
+	RewardedAd,
+	RewardedAdEventType,
+	AdEventType,
+	TestIds,
+	BannerAd,
+	BannerAdSize,
+} from 'react-native-google-mobile-ads';
+import * as Clipboard from 'expo-clipboard';
+import {
+	extractTextFromImage,
+	isSupported as isTextExtractionSupported,
+} from 'expo-text-extractor';
 
 // ------------------------------------------------------------------
 // Theme definitions (Dark and Light)
@@ -94,14 +106,25 @@ const SABU_DIR = FileSystem.documentDirectory + 'SabuScan/';
 const interstitialAdUnitId = __DEV__
 	? TestIds.INTERSTITIAL
 	: Platform.OS === 'ios'
-		? 'ca-app-pub-5117316644857484/4057157518'
+		? 'ca-app-pub-5117316644857484/2596809566'
 		: 'ca-app-pub-5117316644857484/8021075376';
 
 const bannerAdUnitId = __DEV__
 	? TestIds.BANNER
 	: Platform.OS === 'ios'
-		? 'ca-app-pub-5117316644857484/4277791009'
+		? 'ca-app-pub-5117316644857484/6017408731'
 		: 'ca-app-pub-5117316644857484/1211502322';
+
+// Rewarded is opt-in only. Android has no rewarded unit yet, so the feature
+// hides itself there rather than falling back to a test unit in production.
+const rewardedAdUnitId = __DEV__
+	? TestIds.REWARDED
+	: Platform.OS === 'ios'
+		? 'ca-app-pub-5117316644857484/4813266605'
+		: null;
+
+// How long one rewarded view buys the user an ad-free session.
+const AD_FREE_DURATION_MS = 30 * 60 * 1000;
 
 // Helper to create dynamic styles
 const makeStyles = (theme) =>
@@ -910,6 +933,21 @@ export default function App() {
 	// Interstitial ad state
 	const [interstitialAd, setInterstitialAd] = useState(null);
 	const [isAdLoaded, setIsAdLoaded] = useState(false);
+	// Ads SDK readiness — nothing ad-related renders until this is true.
+	const [adsReady, setAdsReady] = useState(false);
+
+	// Opt-in rewarded ad: watching one buys a temporary ad-free session.
+	const [rewardedAd, setRewardedAd] = useState(null);
+	const [isRewardedLoaded, setIsRewardedLoaded] = useState(false);
+	const [adFreeUntil, setAdFreeUntil] = useState(0);
+	const [adFreeTick, setAdFreeTick] = useState(0);
+	const isAdFree = adFreeUntil > Date.now();
+
+	// OCR results
+	const [ocrResults, setOcrResults] = useState([]);
+	const [ocrModalVisible, setOcrModalVisible] = useState(false);
+	const [ocrCopied, setOcrCopied] = useState(false);
+	const [ocrProgress, setOcrProgress] = useState({ current: 0, total: 0 });
 
 	const showThemedAlert = (
 		title,
@@ -926,8 +964,7 @@ export default function App() {
 	const initializeAndLoadInterstitialAd = async () => {
 		try {
 			const ad = InterstitialAd.createForAdRequest(interstitialAdUnitId, {
-			
-equestNonPersonalizedAdsOnly: false,
+				requestNonPersonalizedAdsOnly: true,
 			});
 
 			ad.addAdEventListener(AdEventType.CLOSED, () => {
@@ -956,11 +993,63 @@ equestNonPersonalizedAdsOnly: false,
 
 	const showInterstitialAd = async () => {
 		try {
+			// Respect an active ad-free session earned via the rewarded ad.
+			if (adFreeUntil > Date.now()) return;
 			if (isAdLoaded && interstitialAd) {
 				await interstitialAd.show();
 			}
 		} catch (error) {
 			console.log('Error showing interstitial ad:', error);
+		}
+	};
+
+	// ------------------------------------------------------------------
+	// Rewarded ad — strictly opt-in. Never shown automatically. Watching one
+	// removes ads for a while; nothing is taken away if the user declines.
+	// ------------------------------------------------------------------
+	const initializeAndLoadRewardedAd = () => {
+		if (!rewardedAdUnitId) return; // no unit configured on this platform
+		try {
+			const ad = RewardedAd.createForAdRequest(rewardedAdUnitId, {
+				requestNonPersonalizedAdsOnly: true,
+			});
+
+			ad.addAdEventListener(RewardedAdEventType.LOADED, () => {
+				setIsRewardedLoaded(true);
+			});
+
+			ad.addAdEventListener(RewardedAdEventType.EARNED_REWARD, () => {
+				setAdFreeUntil(Date.now() + AD_FREE_DURATION_MS);
+			});
+
+			ad.addAdEventListener(AdEventType.CLOSED, () => {
+				setIsRewardedLoaded(false);
+				ad.load();
+			});
+
+			ad.addAdEventListener(AdEventType.ERROR, (error) => {
+				console.log('Rewarded ad error:', error);
+				setIsRewardedLoaded(false);
+			});
+
+			setRewardedAd(ad);
+			ad.load();
+		} catch (error) {
+			console.log('Error initializing rewarded ad:', error);
+		}
+	};
+
+	const watchRewardedAd = async () => {
+		try {
+			if (!isRewardedLoaded || !rewardedAd) return;
+			await rewardedAd.show();
+		} catch (error) {
+			console.log('Error showing rewarded ad:', error);
+			showThemedAlert(
+				'Video Unavailable',
+				'That video could not be loaded right now. Please try again in a moment.',
+				[{ text: 'OK', style: 'default', onPress: () => {} }],
+			);
 		}
 	};
 
@@ -970,19 +1059,33 @@ equestNonPersonalizedAdsOnly: false,
 
 	useEffect(() => {
 		(async () => {
-			// Request ATT permission on iOS before initializing ads
-			if (Platform.OS === 'ios') {
-				try {
-					await requestTrackingPermissionsAsync();
-				} catch (_) {}
-			}
+			// Load the user's documents first — nothing here may block the UI.
 			try {
-				await MediaLibrary.requestPermissionsAsync();
-			} catch (_) {}
-			await loadLibraryFiles();
-			initializeAndLoadInterstitialAd();
+				await loadLibraryFiles();
+			} catch (error) {
+				console.log('Error loading library on launch:', error);
+				setIsLoading(false);
+			}
+
+			// Ads are initialized after the UI is up and are fully non-fatal.
+			try {
+				await mobileAds().initialize();
+				setAdsReady(true);
+				initializeAndLoadInterstitialAd();
+				initializeAndLoadRewardedAd();
+			} catch (error) {
+				console.log('Mobile ads init failed, continuing without ads:', error);
+			}
 		})();
 	}, []);
+
+	// Re-render once a minute while an ad-free session is running so the
+	// countdown stays accurate and ads reappear the moment it lapses.
+	useEffect(() => {
+		if (adFreeUntil <= Date.now()) return;
+		const timer = setInterval(() => setAdFreeTick((t) => t + 1), 30 * 1000);
+		return () => clearInterval(timer);
+	}, [adFreeUntil]);
 
 	const loadLibraryFiles = async () => {
 		setIsLoading(true);
@@ -1085,22 +1188,108 @@ equestNonPersonalizedAdsOnly: false,
 		}
 	};
 
-	const extractOCR = () => {
-		if (scannedImages.length === 0) return;
+	// ------------------------------------------------------------------
+	// OCR — on-device text recognition.
+	// Apple Vision on iOS, Google ML Kit on Android. Runs fully offline;
+	// no image ever leaves the device.
+	// ------------------------------------------------------------------
+	const extractOCR = async () => {
+		if (scannedImages.length === 0 || isExtractingOCR) return;
+
+		if (!isTextExtractionSupported) {
+			showThemedAlert(
+				'Not Supported',
+				'Text recognition is not available on this device.',
+				[{ text: 'OK', style: 'default', onPress: () => {} }],
+			);
+			return;
+		}
+
 		setIsExtractingOCR(true);
-		setTimeout(() => {
+		setOcrProgress({ current: 0, total: scannedImages.length });
+
+		try {
+			const pages = [];
+
+			for (let i = 0; i < scannedImages.length; i++) {
+				setOcrProgress({ current: i + 1, total: scannedImages.length });
+				try {
+					const lines = await extractTextFromImage(scannedImages[i]);
+					pages.push({
+						page: i + 1,
+						text: Array.isArray(lines) ? lines.join('\n').trim() : '',
+					});
+				} catch (error) {
+					console.log(`OCR failed on page ${i + 1}:`, error);
+					pages.push({ page: i + 1, text: '' });
+				}
+			}
+
+			setIsExtractingOCR(false);
+
+			const withText = pages.filter((p) => p.text.length > 0);
+			if (withText.length === 0) {
+				showThemedAlert(
+					'No Text Found',
+					'We could not detect any readable text in ' +
+						(pages.length > 1 ? 'these pages' : 'this page') +
+						'. Try rescanning with better lighting or a sharper focus.',
+					[{ text: 'OK', style: 'default', onPress: () => {} }],
+				);
+				return;
+			}
+
+			setOcrResults(pages);
+			setOcrModalVisible(true);
+		} catch (error) {
+			console.log('OCR extraction failed:', error);
 			setIsExtractingOCR(false);
 			showThemedAlert(
-				'OCR Extraction Complete',
-				'Text extracted from ' +
-					scannedImages.length +
-					' page(s).\n\n*Connect ML Kit / Cloud Vision for live extraction.*',
-				[
-					{ text: 'Copy Text', onPress: () => {} },
-					{ text: 'Close', style: 'cancel' },
-				],
+				'Extraction Failed',
+				'Something went wrong while reading the text. Please try again.',
+				[{ text: 'OK', style: 'default', onPress: () => {} }],
 			);
-		}, 2500);
+		}
+	};
+
+	const ocrPlainText = () =>
+		ocrResults
+			.filter((p) => p.text.length > 0)
+			.map((p) =>
+				ocrResults.length > 1 ? `--- Page ${p.page} ---\n${p.text}` : p.text,
+			)
+			.join('\n\n');
+
+	const copyOcrText = async () => {
+		const text = ocrPlainText();
+		if (!text) return;
+		try {
+			await Clipboard.setStringAsync(text);
+			setOcrCopied(true);
+			setTimeout(() => setOcrCopied(false), 2000);
+		} catch (error) {
+			console.log('Clipboard copy failed:', error);
+		}
+	};
+
+	const shareOcrText = async () => {
+		const text = ocrPlainText();
+		if (!text) return;
+		try {
+			const fileUri =
+				FileSystem.cacheDirectory +
+				`extracted-text-${Date.now()}.txt`;
+			await FileSystem.writeAsStringAsync(fileUri, text);
+			if (await Sharing.isAvailableAsync()) {
+				await Sharing.shareAsync(fileUri, {
+					mimeType: 'text/plain',
+					dialogTitle: 'Share extracted text',
+					UTI: 'public.plain-text',
+				});
+			}
+		} catch (error) {
+			console.log('Sharing extracted text failed:', error);
+		}
 	};
 
 	const saveAsPDF = async (baseName, b64Images) => {
@@ -1260,12 +1449,16 @@ equestNonPersonalizedAdsOnly: false,
 				resultMessage = `PDF "${baseName}.pdf" (${scannedImages.length} page${scannedImages.length > 1 ? 's' : ''}) saved.`;
 				if (autoSaveToGallery) {
 					try {
-						const asset = await MediaLibrary.createAssetAsync(finalUri);
-						const album = await MediaLibrary.getAlbumAsync('SabuScan');
-						if (!album) {
-							await MediaLibrary.createAlbumAsync('SabuScan', asset, false);
-						} else {
-							await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+						// Ask only at the moment we actually need gallery access.
+						const { granted } = await MediaLibrary.requestPermissionsAsync();
+						if (granted) {
+							const asset = await MediaLibrary.createAssetAsync(finalUri);
+							const album = await MediaLibrary.getAlbumAsync('SabuScan');
+							if (!album) {
+								await MediaLibrary.createAlbumAsync('SabuScan', asset, false);
+							} else {
+								await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+							}
 						}
 					} catch (_) {}
 				}
@@ -2171,6 +2364,59 @@ equestNonPersonalizedAdsOnly: false,
 			contentContainerStyle={{ paddingBottom: 140 }}>
 			<Text style={styles.heroMain}>Settings</Text>
 
+			{/* Opt-in only. Hidden entirely when no rewarded unit is configured
+			    for this platform. Nothing is gated behind it. */}
+			{adsReady && rewardedAdUnitId && (
+				<>
+					<Text style={[styles.sectionTitle, { marginTop: 24 }]}>ADS</Text>
+					<View style={styles.card}>
+						<View style={[styles.settingRow, { borderBottomWidth: 0 }]}>
+							<View style={styles.settingIcon}>
+								<Feather
+									name={isAdFree ? 'check-circle' : 'gift'}
+									size={16}
+									color={isAdFree ? theme.success : theme.primaryTeal}
+								/>
+							</View>
+							<View style={{ flex: 1, marginRight: 10 }}>
+								<Text style={styles.settingLabel}>
+									{isAdFree ? 'Ad-free active' : 'Hide ads for 30 minutes'}
+								</Text>
+								<Text style={styles.mutedText}>
+									{isAdFree
+										? `${Math.max(1, Math.ceil((adFreeUntil - Date.now()) / 60000))} min remaining — thanks for the support`
+										: 'Optional: watch a short video to hide ads for a while'}
+								</Text>
+							</View>
+							{!isAdFree && (
+								<TouchableOpacity
+									onPress={watchRewardedAd}
+									disabled={!isRewardedLoaded}
+									style={{
+										paddingHorizontal: 14,
+										paddingVertical: 8,
+										borderRadius: 10,
+										backgroundColor: isRewardedLoaded
+											? theme.primaryTeal
+											: theme.surfaceHighlight,
+									}}>
+									<Text
+										style={{
+											color: isRewardedLoaded
+												? theme.background
+												: theme.textMuted,
+											fontWeight: '600',
+											fontSize: 13,
+										}}>
+										{isRewardedLoaded ? 'Watch' : 'Loading'}
+									</Text>
+								</TouchableOpacity>
+							)}
+						</View>
+					</View>
+				</>
+			)}
+
 			<Text style={[styles.sectionTitle, { marginTop: 24 }]}>APPEARANCE</Text>
 			<View style={styles.card}>
 				<View style={styles.settingRow}>
@@ -2486,7 +2732,9 @@ equestNonPersonalizedAdsOnly: false,
 								/>
 							)}
 							<Text style={[styles.actBtnTxt, { color: theme.primaryTeal }]}>
-								OCR
+								{isExtractingOCR && ocrProgress.total > 1
+									? `${ocrProgress.current}/${ocrProgress.total}`
+									: 'OCR'}
 							</Text>
 						</TouchableOpacity>
 						<TouchableOpacity
@@ -2561,6 +2809,161 @@ equestNonPersonalizedAdsOnly: false,
 								backgroundColor: theme.primaryTeal,
 							}}
 						/>
+					</View>
+				</View>
+			</View>
+		</Modal>
+	);
+
+	// ------------------------------------------------------------------
+	// OCR results modal — shows the real extracted text, page by page
+	// ------------------------------------------------------------------
+	const renderOcrModal = () => (
+		<Modal
+			visible={ocrModalVisible}
+			transparent
+			animationType='slide'
+			onRequestClose={() => setOcrModalVisible(false)}>
+			<View style={styles.shareModalOverlay}>
+				<View
+					style={{
+						width: '92%',
+						maxHeight: '80%',
+						backgroundColor: theme.surface,
+						borderRadius: 20,
+						overflow: 'hidden',
+					}}>
+					{/* Header */}
+					<View
+						style={{
+							flexDirection: 'row',
+							alignItems: 'center',
+							justifyContent: 'space-between',
+							paddingHorizontal: 20,
+							paddingVertical: 16,
+							borderBottomWidth: 1,
+							borderBottomColor: theme.surfaceHighlight,
+						}}>
+						<View style={{ flexDirection: 'row', alignItems: 'center' }}>
+							<MaterialCommunityIcons
+								name='text-recognition'
+								size={22}
+								color={theme.primaryTeal}
+							/>
+							<Text
+								style={{
+									color: theme.textMain,
+									fontSize: 17,
+									fontWeight: '700',
+									marginLeft: 10,
+								}}>
+								Extracted Text
+							</Text>
+						</View>
+						<TouchableOpacity
+							onPress={() => setOcrModalVisible(false)}
+							hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+							<Ionicons
+								name='close'
+								size={24}
+								color={theme.textMuted}
+							/>
+						</TouchableOpacity>
+					</View>
+
+					{/* Body */}
+					<ScrollView
+						style={{ paddingHorizontal: 20 }}
+						contentContainerStyle={{ paddingVertical: 16 }}>
+						{ocrResults.map((p) => (
+							<View
+								key={p.page}
+								style={{ marginBottom: 20 }}>
+								{ocrResults.length > 1 && (
+									<Text
+										style={{
+											color: theme.textMuted,
+											fontSize: 12,
+											fontWeight: '700',
+											letterSpacing: 0.5,
+											marginBottom: 6,
+										}}>
+										PAGE {p.page}
+									</Text>
+								)}
+								<Text
+									selectable
+									style={{
+										color: p.text ? theme.textSecondary : theme.textMuted,
+										fontSize: 15,
+										lineHeight: 22,
+										fontStyle: p.text ? 'normal' : 'italic',
+									}}>
+									{p.text || 'No text detected on this page.'}
+								</Text>
+							</View>
+						))}
+					</ScrollView>
+
+					{/* Footer actions */}
+					<View
+						style={{
+							flexDirection: 'row',
+							padding: 16,
+							borderTopWidth: 1,
+							borderTopColor: theme.surfaceHighlight,
+						}}>
+						<TouchableOpacity
+							onPress={copyOcrText}
+							style={{
+								flex: 1,
+								flexDirection: 'row',
+								alignItems: 'center',
+								justifyContent: 'center',
+								paddingVertical: 13,
+								borderRadius: 12,
+								backgroundColor: theme.surfaceHighlight,
+								marginRight: 10,
+							}}>
+							<Feather
+								name={ocrCopied ? 'check' : 'copy'}
+								size={16}
+								color={ocrCopied ? theme.success : theme.primaryTeal}
+							/>
+							<Text
+								style={{
+									color: ocrCopied ? theme.success : theme.primaryTeal,
+									fontWeight: '600',
+									marginLeft: 8,
+								}}>
+								{ocrCopied ? 'Copied' : 'Copy Text'}
+							</Text>
+						</TouchableOpacity>
+						<TouchableOpacity
+							onPress={shareOcrText}
+							style={{
+								flex: 1,
+								flexDirection: 'row',
+								alignItems: 'center',
+								justifyContent: 'center',
+								paddingVertical: 13,
+								borderRadius: 12,
+								backgroundColor: theme.primaryTeal,
+							}}>
+							<Feather
+								name='share'
+								size={16}
+								color={theme.background}
+							/>
+							<Text
+								style={{
+									color: theme.background,
+									fontWeight: '600',
+									marginLeft: 8,
+								}}>
+								Share
+							</Text>
+						</TouchableOpacity>
 					</View>
 				</View>
 			</View>
@@ -2737,19 +3140,25 @@ equestNonPersonalizedAdsOnly: false,
 					</KeyboardAvoidingView>
 					{renderPreviewModal()}
 					{renderExportModal()}
+					{renderOcrModal()}
 					{renderCustomAlert()}
-					<BannerAd
-						unitId={bannerAdUnitId}
-						size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
-						onAdFailedToLoad={(error) => console.log('Banner ad error:', error)}
-						onAdLoaded={() => console.log('Banner ad loaded')}
-						style={{
-							width: '100%',
-							backgroundColor: theme.surface,
-							borderTopWidth: 1,
-							borderTopColor: theme.surfaceHighlight,
-						}}
-					/>
+					{adsReady && !isAdFree && (
+						<BannerAd
+							unitId={bannerAdUnitId}
+							size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
+							requestOptions={{ requestNonPersonalizedAdsOnly: true }}
+							onAdFailedToLoad={(error) =>
+								console.log('Banner ad error:', error)
+							}
+							onAdLoaded={() => console.log('Banner ad loaded')}
+							style={{
+								width: '100%',
+								backgroundColor: theme.surface,
+								borderTopWidth: 1,
+								borderTopColor: theme.surfaceHighlight,
+							}}
+						/>
+					)}
 				</SafeAreaView>
 			</SafeAreaProvider>
 		</ThemeContext.Provider>
