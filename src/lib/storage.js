@@ -16,7 +16,9 @@ import {
 	pageFileName,
 	pageFilesOf,
 	pdfFileName,
+	sanitizeBaseName,
 	thumbFileName,
+	uniqueBaseName,
 } from './documents.js';
 import { buildPdfHtml, PAGE_H, PAGE_MARGINS, PAGE_W } from './pdfHtml.js';
 
@@ -277,4 +279,37 @@ export const renameDocument = async (fromBase, toBase) => {
 		const to = toBase + f.slice(fromBase.length);
 		await FileSystem.moveAsync({ from: SABU_DIR + f, to: SABU_DIR + to });
 	}
+};
+
+// ------------------------------------------------------------------
+// Importing a PDF handed to us by another app.
+//
+// These have no page images — nothing here can rasterise a PDF — so they are
+// stored as the PDF plus a metadata record, and the library marks them as not
+// editable. They can still be read, renamed, shared and deleted.
+// ------------------------------------------------------------------
+
+export const importPdf = async (sourceUri, desiredName) => {
+	await ensureDir();
+	const files = await listDir();
+
+	// Prefer the name the file arrived with; fall back to a dated one.
+	const raw =
+		desiredName ||
+		decodeURIComponent(String(sourceUri).split('/').pop() || '')
+			.replace(/\.pdf$/i, '');
+	const base = uniqueBaseName(files, sanitizeBaseName(raw) || 'Imported PDF');
+
+	const dest = SABU_DIR + pdfFileName(base);
+	await FileSystem.copyAsync({ from: sourceUri, to: dest });
+
+	await writeMeta(base, {
+		pages: null,
+		createdAt: new Date().toISOString(),
+		format: 'PDF',
+		imported: true,
+		tags: [],
+	});
+
+	return { base, uri: dest };
 };

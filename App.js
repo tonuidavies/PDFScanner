@@ -74,6 +74,7 @@ import {
 	SABU_DIR,
 	SETTINGS_FILE,
 	deleteDocument as deleteDocumentFiles,
+	importPdf,
 	listDir,
 	pageUrisFor,
 	presetFor,
@@ -83,6 +84,7 @@ import AnimatedCard from './src/components/AnimatedCard.js';
 import DocumentRow from './src/components/DocumentRow.js';
 import ErrorBoundary from './src/components/ErrorBoundary.js';
 import PdfEditor from './src/screens/PdfEditor.js';
+import PdfReader from './src/screens/PdfReader.js';
 
 // ------------------------------------------------------------------
 // Theme definitions (Dark and Light)
@@ -858,6 +860,16 @@ const makeStyles = (theme, win) =>
 			marginHorizontal: 24,
 			marginTop: 6,
 		},
+		modalReadBtn: {
+			flex: 1,
+			flexDirection: 'row',
+			alignItems: 'center',
+			justifyContent: 'center',
+			gap: 8,
+			paddingVertical: 15,
+			borderRadius: 14,
+			backgroundColor: theme.primaryBlue,
+		},
 		modalEditBtn: {
 			flex: 1,
 			flexDirection: 'row',
@@ -873,7 +885,7 @@ const makeStyles = (theme, win) =>
 			alignItems: 'center',
 			justifyContent: 'center',
 			gap: 7,
-			paddingHorizontal: 18,
+			paddingHorizontal: 16,
 			paddingVertical: 15,
 			borderRadius: 14,
 			backgroundColor: theme.surfaceHighlight,
@@ -1039,6 +1051,10 @@ export default function App() {
 	// Page editor
 	const [editorDoc, setEditorDoc] = useState(null);
 	const [editorVisible, setEditorVisible] = useState(false);
+
+	// Reader
+	const [readerDoc, setReaderDoc] = useState(null);
+	const [readerVisible, setReaderVisible] = useState(false);
 
 	// Real on-disk usage, measured only while Settings is open. It needs a
 	// stat per file, which is far too much work to repeat on every library
@@ -1564,6 +1580,10 @@ export default function App() {
 
 					let pages = pageFiles.length || 1;
 					let tags = [];
+					// A PDF that arrived from another app has no page images and
+					// no reliable page count — nothing here can read one out of a
+					// PDF. It is shown as imported rather than guessed at.
+					let imported = false;
 					if (present.has(metaName)) {
 						try {
 							const meta = JSON.parse(
@@ -1574,6 +1594,7 @@ export default function App() {
 							// The page files are the document; metadata only fills
 							// in for older documents that have none.
 							if (!pageFiles.length && meta.pages) pages = meta.pages;
+							imported = !!meta.imported;
 							tags = meta.tags || [];
 						} catch (_) {}
 					}
@@ -1587,8 +1608,9 @@ export default function App() {
 						time,
 						timestamp: modTime,
 						size: formatSizeMB(info.size),
-						pages,
+						pages: imported ? null : pages,
 						tags,
+						imported,
 						format: 'PDF',
 						// Documents saved before page images were kept have
 						// nothing to edit; the library says so rather than
@@ -1750,6 +1772,79 @@ export default function App() {
 			return [];
 		}
 	};
+
+	const openReader = (doc) => {
+		if (!doc) return;
+		setPreviewVisible(false);
+		setReaderDoc(doc);
+		setReaderVisible(true);
+	};
+
+	// ------------------------------------------------------------------
+	// PDFs handed to us by another app.
+	//
+	// The app registers as a PDF viewer, so Files, Mail and the share sheet
+	// can send one here. iOS copies it into the app and delivers a file: URL;
+	// Android delivers a content: URI from its VIEW/SEND intent. Both arrive
+	// through Linking, on launch and while already running.
+	// ------------------------------------------------------------------
+	const handledUrls = useRef(new Set());
+
+	const importIncomingPdf = async (url) => {
+		if (!url) return;
+		// A cold start delivers the same URL through getInitialURL AND the
+		// listener, which would import the document twice.
+		if (handledUrls.current.has(url)) return;
+		handledUrls.current.add(url);
+
+		// Ignore our own deep links and anything that is plainly not a file.
+		if (/^(https?|exp|pdfscan):/i.test(url)) return;
+
+		try {
+			const { base, uri } = await importPdf(url);
+			await loadLibraryFiles();
+			setActiveTab('library');
+			showThemedAlert(
+				'PDF added',
+				`"${base}" is in your library.`,
+				[
+					{
+						text: 'Read it',
+						onPress: () =>
+							openReader({
+								id: base + '.pdf',
+								title: base,
+								uri,
+								pages: null,
+								size: null,
+								imported: true,
+								editable: false,
+							}),
+					},
+					{ text: 'Done', style: 'cancel' },
+				],
+			);
+		} catch (error) {
+			console.log('Could not import the incoming PDF:', error);
+			showThemedAlert(
+				'Could not open that file',
+				'This document could not be added to your library.',
+			);
+		}
+	};
+
+	useEffect(() => {
+		Linking.getInitialURL()
+			.then((url) => {
+				if (url) importIncomingPdf(url);
+			})
+			.catch((error) => console.log('Could not read the launch URL:', error));
+
+		const sub = Linking.addEventListener('url', ({ url }) =>
+			importIncomingPdf(url),
+		);
+		return () => sub.remove();
+	}, []);
 
 	const openEditor = (doc) => {
 		if (!doc) return;
@@ -2477,7 +2572,10 @@ export default function App() {
 								{
 									icon: 'file',
 									label: 'Pages',
-									value: String(previewDoc?.pages ?? 1),
+									value:
+										previewDoc?.pages == null
+											? '—'
+											: String(previewDoc.pages),
 								},
 								{
 									icon: 'hard-drive',
@@ -2507,6 +2605,16 @@ export default function App() {
 						    its own full-width row above the share/export group. */}
 						<View style={styles.modalPrimaryRow}>
 							<TouchableOpacity
+								style={styles.modalReadBtn}
+								onPress={() => openReader(previewDoc)}>
+								<MaterialCommunityIcons
+									name='book-open-page-variant-outline'
+									size={18}
+									color='#fff'
+								/>
+								<Text style={styles.modalEditLabel}>READ</Text>
+							</TouchableOpacity>
+							<TouchableOpacity
 								style={[
 									styles.modalEditBtn,
 									!previewDoc?.editable && styles.modalEditBtnMuted,
@@ -2522,7 +2630,7 @@ export default function App() {
 										styles.modalEditLabel,
 										!previewDoc?.editable && { color: theme.textMuted },
 									]}>
-									{previewDoc?.editable ? 'EDIT PAGES' : 'PAGES NOT STORED'}
+									{previewDoc?.editable ? 'EDIT' : 'NO PAGES'}
 								</Text>
 							</TouchableOpacity>
 							<TouchableOpacity
@@ -2533,7 +2641,6 @@ export default function App() {
 									size={18}
 									color={theme.primaryTeal}
 								/>
-								<Text style={styles.modalOcrLabel}>TEXT</Text>
 							</TouchableOpacity>
 						</View>
 						<View style={styles.modalActions}>
@@ -3986,6 +4093,13 @@ export default function App() {
 						showAlert={showThemedAlert}
 						onRequestScan={scanPagesForEditor}
 						onRequestPick={pickPagesForEditor}
+					/>
+					<PdfReader
+						visible={readerVisible}
+						doc={readerDoc}
+						theme={theme}
+						onClose={() => setReaderVisible(false)}
+						showAlert={showThemedAlert}
 					/>
 					{/* The alert sits last so it paints above the editor. */}
 					{renderCustomAlert()}
