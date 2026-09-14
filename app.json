@@ -18,7 +18,16 @@
 			"supportsTablet": true,
 			"bundleIdentifier": "com.sabu.scanner",
 			"infoPlist": {
-				"ITSAppUsesNonExemptEncryption": false
+				"ITSAppUsesNonExemptEncryption": false,
+				"LSSupportsOpeningDocumentsInPlace": false,
+				"CFBundleDocumentTypes": [
+					{
+						"CFBundleTypeName": "PDF Document",
+						"CFBundleTypeRole": "Viewer",
+						"LSHandlerRank": "Alternate",
+						"LSItemContentTypes": ["com.adobe.pdf"]
+					}
+				]
 			}
 		},
 
@@ -34,7 +43,19 @@
 				"android.permission.READ_EXTERNAL_STORAGE",
 				"android.permission.WRITE_EXTERNAL_STORAGE"
 			],
-			"blockedPermissions": ["com.google.android.gms.permission.AD_ID"]
+			"blockedPermissions": ["com.google.android.gms.permission.AD_ID"],
+			"intentFilters": [
+				{
+					"action": "VIEW",
+					"category": ["DEFAULT", "BROWSABLE"],
+					"data": [{ "mimeType": "application/pdf" }]
+				},
+				{
+					"action": "SEND",
+					"category": ["DEFAULT"],
+					"data": [{ "mimeType": "application/pdf" }]
+				}
+			]
 		},
 
 		"web": {

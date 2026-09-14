@@ -40,12 +40,12 @@ test('the page box stays under the paper height', () => {
 
 test('the free-tier mark appears only when asked for', () => {
 	const free = buildPdfHtml([page(1)], { showMark: true });
-	assert.match(free, /Scanned with PDFScan/);
 	assert.match(free, /class="mk"/);
+	assert.match(free, /<svg /);
 
 	const pro = buildPdfHtml([page(1)], { showMark: false });
-	assert.equal(pro.includes('Scanned with PDFScan'), false);
 	assert.equal(pro.includes('class="mk"'), false);
+	assert.equal(pro.includes('<svg '), false);
 	// Pro pages must also not reserve the strip, or they would be laid out
 	// as if the mark were still there.
 	assert.equal(pro.includes('padding-bottom:' + MARK_H + 'pt'), false);
@@ -59,6 +59,19 @@ test('the mark reserves space so it cannot cover the scan', () => {
 	assert.match(html, new RegExp('padding-bottom:' + MARK_H + 'pt'));
 	// The image cap must shrink by exactly the reserved strip.
 	assert.match(html, new RegExp('max-height:' + (PAGE_BOX_H - MARK_H) + 'pt'));
+});
+
+// The mark is a logo alone — no wording, and small enough to sit inside the
+// strip the page reserves for it.
+test('the mark carries no text and fits its strip', () => {
+	const html = buildPdfHtml([page(1)], { showMark: true });
+	assert.equal(/Scanned with/i.test(html), false);
+	assert.equal(/<span/.test(html), false);
+
+	const glyph = /\.mk svg\{width:(\d+)pt;height:(\d+)pt/.exec(html);
+	assert.ok(glyph, 'the mark should size its glyph explicitly');
+	assert.ok(Number(glyph[2]) < MARK_H, 'glyph must be shorter than the strip');
+	assert.ok(MARK_H <= 20, 'the reserved strip should stay unobtrusive');
 });
 
 test('titles are escaped so a document name cannot break the markup', () => {

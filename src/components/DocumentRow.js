@@ -58,8 +58,12 @@ function DocumentRow({
 					</Text>
 					<View style={styles.badgeRow}>
 						<View style={styles.badge}>
+							{/* An imported PDF has no page count — nothing here can
+							    read one out of a PDF, so it is not invented. */}
 							<Text style={styles.badgeTxt}>
-								{doc.pages} page{doc.pages > 1 ? 's' : ''}
+								{doc.pages == null
+									? 'Imported'
+									: `${doc.pages} page${doc.pages > 1 ? 's' : ''}`}
 							</Text>
 						</View>
 						<View
