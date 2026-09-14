@@ -46,6 +46,7 @@ import mobileAds, {
 	BannerAdSize,
 } from 'react-native-google-mobile-ads';
 import * as Clipboard from 'expo-clipboard';
+import * as DocumentPicker from 'expo-document-picker';
 import Purchases from 'react-native-purchases';
 import * as StoreReview from 'expo-store-review';
 import {
@@ -351,6 +352,17 @@ const makeStyles = (theme, win) =>
 			marginBottom: 22,
 		},
 		emptyBtns: { flexDirection: 'row' },
+		importRow: {
+			flexDirection: 'row',
+			alignItems: 'center',
+			gap: 8,
+			marginTop: 18,
+			paddingVertical: 10,
+			paddingHorizontal: 14,
+			borderRadius: 11,
+			backgroundColor: theme.surfaceHighlight,
+		},
+		importRowTxt: { color: theme.accent, fontSize: 13, fontWeight: '600' },
 		primaryBtn: {
 			flexDirection: 'row',
 			alignItems: 'center',
@@ -1825,10 +1837,61 @@ export default function App() {
 				],
 			);
 		} catch (error) {
-			console.log('Could not import the incoming PDF:', error);
+			// The usual cause is a security-scoped URL: when the PDF lives in a
+			// File Provider, iOS can hand over the original rather than a copy,
+			// and reading it needs startAccessingSecurityScopedResource, which
+			// expo-file-system does not call. LSSupportsOpeningDocumentsInPlace
+			// is declared false so iOS copies into Inbox instead — and Import
+			// PDF below is the path that never depends on this at all.
+			console.log('Could not import the incoming PDF:', url, error);
 			showThemedAlert(
 				'Could not open that file',
-				'This document could not be added to your library.',
+				'That document could not be read from where it is stored. Try Import PDF on the Scan tab instead.',
+			);
+		}
+	};
+
+	// Import a PDF the user picks themselves.
+	//
+	// expo-document-picker copies the file into this app's cache before
+	// returning, so the uri is always plainly readable — unlike a URL handed
+	// over by the share sheet, which can be security-scoped.
+	const importPdfFromFiles = async () => {
+		try {
+			const result = await DocumentPicker.getDocumentAsync({
+				type: 'application/pdf',
+				copyToCacheDirectory: true,
+				multiple: false,
+			});
+			if (result.canceled || !result.assets || result.assets.length === 0) return;
+			const asset = result.assets[0];
+			const { base, uri } = await importPdf(
+				asset.uri,
+				(asset.name || '').replace(/\.pdf$/i, ''),
+			);
+			await loadLibraryFiles();
+			setActiveTab('library');
+			showThemedAlert('PDF added', `"${base}" is in your library.`, [
+				{
+					text: 'Read it',
+					onPress: () =>
+						openReader({
+							id: base + '.pdf',
+							title: base,
+							uri,
+							pages: null,
+							size: null,
+							imported: true,
+							editable: false,
+						}),
+				},
+				{ text: 'Done', style: 'cancel' },
+			]);
+		} catch (error) {
+			console.log('Could not import a PDF:', error);
+			showThemedAlert(
+				'Import failed',
+				'That PDF could not be added to your library.',
 			);
 		}
 	};
@@ -2859,6 +2922,16 @@ export default function App() {
 							/>
 							<Text style={styles.primaryBtnTxt}>SCAN NOW</Text>
 						</TouchableOpacity>
+						<TouchableOpacity
+							style={styles.importRow}
+							onPress={importPdfFromFiles}>
+							<MaterialCommunityIcons
+								name='file-import-outline'
+								size={16}
+								color={theme.accent}
+							/>
+							<Text style={styles.importRowTxt}>Import a PDF from Files</Text>
+						</TouchableOpacity>
 					</View>
 				) : (
 					<FlatList
@@ -3361,6 +3434,16 @@ export default function App() {
 								</Text>
 							</TouchableOpacity>
 						</View>
+						<TouchableOpacity
+							style={styles.importRow}
+							onPress={importPdfFromFiles}>
+							<MaterialCommunityIcons
+								name='file-import-outline'
+								size={16}
+								color={theme.accent}
+							/>
+							<Text style={styles.importRowTxt}>Import a PDF from Files</Text>
+						</TouchableOpacity>
 					</View>
 				)}
 				renderItem={({ item, index }) => (
