@@ -201,6 +201,12 @@ const REVENUECAT_APPLE_KEY = 'appl_IQCMkwxCKqUQqemXGMlOkqPiZLy';
 const PRO_ENTITLEMENT_ID = 'pro';
 const IAP_SUPPORTED = Platform.OS === 'ios';
 
+// Apple requires a Terms of Use (EULA) link wherever an auto-renewable
+// subscription is offered — Guideline 3.1.2. Apple's own standard EULA is an
+// accepted target when you do not host your own.
+const TERMS_OF_USE_URL =
+	'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
+
 const PRIVACY_POLICY_URL =
 	'https://www.notion.so/elviskirui/Privacy-Policy-for-PDFScanner-362d665fdb86800e95f9d402e4e5d974';
 
@@ -1192,7 +1198,12 @@ export default function App() {
 	// Driven by RevenueCat; see the purchases effect below.
 	// ------------------------------------------------------------------
 	const [isPro, setIsPro] = useState(false);
-	const [proPackage, setProPackage] = useState(null);
+	// Two ways to buy the same `pro` entitlement: a cheap monthly subscription
+	// and a one-time lifetime unlock. Someone who will never subscribe still
+	// has a way to pay, which in a utility app is a large share of buyers.
+	const [monthlyPackage, setMonthlyPackage] = useState(null);
+	const [lifetimePackage, setLifetimePackage] = useState(null);
+	const [selectedPlan, setSelectedPlan] = useState('monthly');
 	const [paywallVisible, setPaywallVisible] = useState(false);
 	const [purchaseBusy, setPurchaseBusy] = useState(false);
 
@@ -1400,20 +1411,23 @@ export default function App() {
 	const hasProEntitlement = (info) =>
 		typeof info?.entitlements?.active?.[PRO_ENTITLEMENT_ID] !== 'undefined';
 
-	// Prefer the explicit Lifetime package. Reading availablePackages[0] would
-	// silently change which product is charged if a package is ever added in
-	// the RevenueCat dashboard — a server-side edit that bypasses app review.
+	// Read each package by its explicit type. Reading availablePackages[0]
+	// would silently change which product is charged if a package is ever
+	// added in the RevenueCat dashboard — a server-side edit that bypasses
+	// app review, and with a subscription in the mix that could mean charging
+	// a recurring price where a one-time one was shown.
 	const loadOfferings = async () => {
 		try {
 			const offerings = await Purchases.getOfferings();
-			const pkg =
-				offerings?.current?.lifetime ??
-				offerings?.current?.availablePackages?.[0] ??
-				offerings?.all?.default?.lifetime ??
-				offerings?.all?.default?.availablePackages?.[0] ??
-				null;
-			if (pkg) setProPackage(pkg);
-			return pkg;
+			const offering = offerings?.current ?? offerings?.all?.default ?? null;
+			const monthly = offering?.monthly ?? null;
+			const lifetime = offering?.lifetime ?? null;
+			if (monthly) setMonthlyPackage(monthly);
+			if (lifetime) setLifetimePackage(lifetime);
+			// Default the selection to whichever actually exists, so the paywall
+			// never opens with a plan selected that cannot be bought.
+			if (!monthly && lifetime) setSelectedPlan('lifetime');
+			return monthly || lifetime;
 		} catch (error) {
 			console.log('Could not load offerings:', error);
 			return null;
@@ -1458,14 +1472,25 @@ export default function App() {
 	// Retry the offering fetch whenever the paywall opens, so a user who
 	// launched offline can still buy once they reconnect.
 	useEffect(() => {
-		if (paywallVisible && IAP_SUPPORTED && !proPackage) loadOfferings();
+		if (
+			paywallVisible &&
+			IAP_SUPPORTED &&
+			!monthlyPackage &&
+			!lifetimePackage
+		) {
+			loadOfferings();
+		}
 	}, [paywallVisible]);
 
+	const activePackage =
+		selectedPlan === 'lifetime' ? lifetimePackage : monthlyPackage;
+
 	const purchasePro = async () => {
-		if (!proPackage || purchaseBusy) return;
+		const pkg = activePackage;
+		if (!pkg || purchaseBusy) return;
 		setPurchaseBusy(true);
 		try {
-			const { customerInfo } = await Purchases.purchasePackage(proPackage);
+			const { customerInfo } = await Purchases.purchasePackage(pkg);
 			const unlocked = hasProEntitlement(customerInfo);
 			setIsPro(unlocked);
 			if (unlocked) {
@@ -3095,9 +3120,11 @@ export default function App() {
 								<Text style={styles.mutedText}>
 									{isPro
 										? 'Thanks for supporting the app'
-										: proPackage
-											? `One-time ${proPackage.product.priceString}`
-											: 'One-time purchase'}
+										: monthlyPackage
+											? `From ${monthlyPackage.product.priceString}/month, or pay once`
+											: lifetimePackage
+												? `One-time ${lifetimePackage.product.priceString}`
+												: 'Monthly or one-time'}
 								</Text>
 							</View>
 							{!isPro && (
@@ -3850,7 +3877,7 @@ export default function App() {
 									marginTop: 6,
 									textAlign: 'center',
 								}}>
-								One payment. Yours forever.
+								Choose monthly, or pay once and keep it.
 							</Text>
 						</View>
 
@@ -3892,16 +3919,92 @@ export default function App() {
 							</View>
 						))}
 
+						{/* Plan picker. Both packages unlock the same `pro`
+						    entitlement, so nothing downstream cares which was bought. */}
+						{[
+							{
+								key: 'monthly',
+								pkg: monthlyPackage,
+								label: 'Monthly',
+								suffix: '/month',
+								note: 'Cancel any time',
+							},
+							{
+								key: 'lifetime',
+								pkg: lifetimePackage,
+								label: 'Lifetime',
+								suffix: ' once',
+								note: 'One payment, no subscription',
+							},
+						].map(({ key, pkg, label, suffix, note }) => {
+							if (!pkg) return null;
+							const active = selectedPlan === key;
+							return (
+								<TouchableOpacity
+									key={key}
+									onPress={() => setSelectedPlan(key)}
+									style={{
+										flexDirection: 'row',
+										alignItems: 'center',
+										borderWidth: 2,
+										borderColor: active
+											? theme.primaryTeal
+											: theme.surfaceHighlight,
+										backgroundColor: active
+											? theme.primaryTeal + '14'
+											: 'transparent',
+										borderRadius: 14,
+										padding: 14,
+										marginBottom: 10,
+									}}>
+									<MaterialCommunityIcons
+										name={
+											active
+												? 'radiobox-marked'
+												: 'radiobox-blank'
+										}
+										size={20}
+										color={active ? theme.primaryTeal : theme.textMuted}
+									/>
+									<View style={{ flex: 1, marginLeft: 12 }}>
+										<Text
+											style={{
+												color: theme.textMain,
+												fontSize: 15,
+												fontWeight: '700',
+											}}>
+											{label}
+										</Text>
+										<Text style={{ color: theme.textMuted, fontSize: 12 }}>
+											{note}
+										</Text>
+									</View>
+									<Text
+										style={{
+											color: theme.textMain,
+											fontSize: 15,
+											fontWeight: '700',
+										}}>
+										{pkg.product.priceString}
+										<Text
+											style={{ color: theme.textMuted, fontWeight: '500' }}>
+											{suffix}
+										</Text>
+									</Text>
+								</TouchableOpacity>
+							);
+						})}
+
 						<TouchableOpacity
 							onPress={purchasePro}
-							disabled={!proPackage || purchaseBusy}
+							disabled={!activePackage || purchaseBusy}
 							style={{
 								marginTop: 8,
 								paddingVertical: 16,
 								borderRadius: 14,
 								alignItems: 'center',
 								backgroundColor:
-									proPackage && !purchaseBusy
+									activePackage && !purchaseBusy
 										? theme.primaryTeal
 										: theme.surfaceHighlight,
 							}}>
@@ -3910,41 +4013,72 @@ export default function App() {
 							) : (
 								<Text
 									style={{
-										color: proPackage ? theme.background : theme.textMuted,
+										color: activePackage
+											? theme.background
+											: theme.textMuted,
 										fontWeight: '700',
 										fontSize: 16,
 									}}>
-									{proPackage
-										? `Unlock for ${proPackage.product.priceString}`
+									{activePackage
+										? selectedPlan === 'lifetime'
+											? `Unlock for ${activePackage.product.priceString}`
+											: `Subscribe — ${activePackage.product.priceString}/month`
 										: 'Unavailable right now'}
 								</Text>
 							)}
 						</TouchableOpacity>
 
+						{/* Guideline 3.1.2 requires the renewal terms to be visible
+						    on the paywall itself, not only in App Store Connect.
+						    This is one of the most common rejection causes. */}
 						<Text
 							style={{
 								color: theme.textMuted,
-								fontSize: 12,
+								fontSize: 11,
 								textAlign: 'center',
 								marginTop: 12,
-								lineHeight: 18,
+								lineHeight: 17,
 							}}>
-							A one-time purchase, not a subscription. Charged to your Apple ID.
+							{selectedPlan === 'lifetime'
+								? 'A one-time purchase, not a subscription. Charged to your Apple ID.'
+								: `PDFScan Pro is a ${monthlyPackage?.product?.priceString ?? ''} per month auto-renewing subscription. Payment is charged to your Apple ID at confirmation of purchase. It renews automatically unless cancelled at least 24 hours before the end of the current period. Manage or cancel in your Apple ID settings.`}
 						</Text>
 
-						<TouchableOpacity
-							onPress={() => openUrl(PRIVACY_POLICY_URL)}
-							style={{ marginTop: 10 }}>
+						<View
+							style={{
+								flexDirection: 'row',
+								justifyContent: 'center',
+								marginTop: 12,
+							}}>
+							<TouchableOpacity onPress={() => openUrl(TERMS_OF_USE_URL)}>
+								<Text
+									style={{
+										color: theme.textMuted,
+										fontSize: 12,
+										textDecorationLine: 'underline',
+									}}>
+									Terms of Use
+								</Text>
+							</TouchableOpacity>
 							<Text
 								style={{
 									color: theme.textMuted,
 									fontSize: 12,
-									textAlign: 'center',
-									textDecorationLine: 'underline',
+									marginHorizontal: 8,
 								}}>
-								Privacy Policy
+								·
 							</Text>
-						</TouchableOpacity>
+							<TouchableOpacity onPress={() => openUrl(PRIVACY_POLICY_URL)}>
+								<Text
+									style={{
+										color: theme.textMuted,
+										fontSize: 12,
+										textDecorationLine: 'underline',
+									}}>
+									Privacy Policy
+								</Text>
+							</TouchableOpacity>
+						</View>
 
 						<View
 							style={{
