@@ -45,7 +45,6 @@ import mobileAds, {
 } from 'react-native-google-mobile-ads';
 import * as Clipboard from 'expo-clipboard';
 import Purchases from 'react-native-purchases';
-import * as StoreReview from 'expo-store-review';
 import {
 	extractTextFromImage,
 	isSupported as isTextExtractionSupported,
@@ -207,13 +206,6 @@ const BRAND_MARK_HTML =
 // customer's invoice is far worse than a faint grey border, so this is 1%
 // and OFF by default: a visible imperfection beats silent data loss.
 const EDGE_TRIM = 0.01;
-
-// Ask for a rating only after the app has demonstrably worked. Three completed
-// saves is the point where someone has stopped evaluating and started using it,
-// and it is late enough that a first-run crash never produces a prompt. Asked
-// once, ever: iOS silently swallows extra requests anyway, and a second ask is
-// how a 5-star user becomes a 1-star review.
-const REVIEW_AFTER_SAVES = 3;
 
 const QUALITY_PRESETS = {
 	High: { maxEdge: 2200, compress: 0.72 }, // ~200 dpi, archival
@@ -1056,10 +1048,6 @@ export default function App() {
 	const [autoCrop, setAutoCrop] = useState(true);
 	const [autoSaveToGallery, setAutoSaveToGallery] = useState(false);
 	const [trimScanEdges, setTrimScanEdges] = useState(false);
-	// Persisted alongside the settings — not preferences, but the same file.
-	const [saveCount, setSaveCount] = useState(0);
-	const [reviewAsked, setReviewAsked] = useState(false);
-	const [pendingReview, setPendingReview] = useState(false);
 	const [pdfQuality, setPdfQuality] = useState('Medium');
 
 	// ------------------------------------------------------------------
@@ -1091,9 +1079,6 @@ export default function App() {
 					if (typeof saved.trimScanEdges === 'boolean')
 						setTrimScanEdges(saved.trimScanEdges);
 					if (QUALITY_PRESETS[saved.pdfQuality]) setPdfQuality(saved.pdfQuality);
-					if (Number.isFinite(saved.saveCount)) setSaveCount(saved.saveCount);
-					if (typeof saved.reviewAsked === 'boolean')
-						setReviewAsked(saved.reviewAsked);
 				}
 			} catch (error) {
 				console.log('Could not read settings, using defaults:', error);
@@ -1117,23 +1102,13 @@ export default function App() {
 						autoSaveToGallery,
 						trimScanEdges,
 						pdfQuality,
-						saveCount,
-						reviewAsked,
 					}),
 				);
 			} catch (error) {
 				console.log('Could not save settings:', error);
 			}
 		})();
-	}, [
-		isDark,
-		autoCrop,
-		autoSaveToGallery,
-		trimScanEdges,
-		pdfQuality,
-		saveCount,
-		reviewAsked,
-	]);
+	}, [isDark, autoCrop, autoSaveToGallery, trimScanEdges, pdfQuality]);
 	const [globalExportFormat, setGlobalExportFormat] = useState('PDF');
 
 	// Export/merge progress modal
@@ -1219,37 +1194,6 @@ export default function App() {
 			console.log('Error initializing interstitial ad:', error);
 		}
 	};
-
-	// Called at the end of a successful save flow, once the user has dealt with
-	// the save dialog. Takes the count explicitly because setSaveCount has not
-	// necessarily flushed by the time this runs.
-	const queueReviewRequest = (count) => {
-		if (reviewAsked) return;
-		if (count < REVIEW_AFTER_SAVES) return;
-		setPendingReview(true);
-	};
-
-	useEffect(() => {
-		if (!pendingReview || alertVisible) return;
-		// The themed alert is a React Native Modal. Presenting the store review
-		// sheet while it is still fading out means iOS drops one of the two
-		// without a word — the same trap the paywall hit. Let it finish first.
-		const timer = setTimeout(async () => {
-			setPendingReview(false);
-			try {
-				if (await StoreReview.isAvailableAsync()) {
-					await StoreReview.requestReview();
-					// Mark asked whether or not they rated. The system decides
-					// if the sheet actually appears, and we get no result back,
-					// so a retry would only risk asking a second time.
-					setReviewAsked(true);
-				}
-			} catch (error) {
-				console.log('Review request failed, ignoring:', error);
-			}
-		}, 900);
-		return () => clearTimeout(timer);
-	}, [pendingReview, alertVisible]);
 
 	const showInterstitialAd = async () => {
 		try {
@@ -1999,8 +1943,6 @@ export default function App() {
 						}
 					} catch (_) {}
 				}
-				const savedSoFar = saveCount + 1;
-				setSaveCount(savedSoFar);
 				showThemedAlert(
 					`Saved as PDF`,
 					resultMessage + '\n\nExport / Share now?',
@@ -2013,17 +1955,9 @@ export default function App() {
 										mimeType: 'application/pdf',
 									});
 								}
-								// Asked after the share sheet closes, not before —
-								// having just sent a document is the best moment,
-								// and it keeps the two sheets from overlapping.
-								queueReviewRequest(savedSoFar);
 							},
 						},
-						{
-							text: 'Done',
-							style: 'cancel',
-							onPress: () => queueReviewRequest(savedSoFar),
-						},
+						{ text: 'Done', style: 'cancel' },
 					],
 				);
 			} else {
@@ -2033,8 +1967,6 @@ export default function App() {
 					activeFormat,
 				);
 				resultMessage = `${savedFiles.length} image file${savedFiles.length > 1 ? 's' : ''} saved as ${activeFormat} in the app folder.`;
-				const savedSoFar = saveCount + 1;
-				setSaveCount(savedSoFar);
 				showThemedAlert(
 					`Saved as ${activeFormat}`,
 					resultMessage +
@@ -2052,14 +1984,9 @@ export default function App() {
 										});
 									}
 								}
-								queueReviewRequest(savedSoFar);
 							},
 						},
-						{
-							text: 'Done',
-							style: 'cancel',
-							onPress: () => queueReviewRequest(savedSoFar),
-						},
+						{ text: 'Done', style: 'cancel' },
 					],
 				);
 			}
