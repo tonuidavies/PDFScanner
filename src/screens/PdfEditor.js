@@ -621,14 +621,17 @@ const makeStyles = (theme) =>
 			borderTopColor: theme.surfaceHighlight,
 			backgroundColor: theme.surface,
 		},
-		actionScroll: { paddingHorizontal: 10, paddingVertical: 10, gap: 6 },
+		// Sized so all six actions fit a 440pt screen without clipping the last
+		// one. The row still scrolls, but a label cut in half at the edge reads
+		// as a bug rather than as "there is more over here".
+		actionScroll: { paddingHorizontal: 8, paddingVertical: 10, gap: 2 },
 		action: {
 			alignItems: 'center',
 			justifyContent: 'center',
-			paddingHorizontal: 16,
+			paddingHorizontal: 8,
 			paddingVertical: 8,
 			borderRadius: 12,
-			minWidth: 68,
+			minWidth: 66,
 		},
 		actionDisabled: { opacity: 0.45 },
 		actionTxt: {
