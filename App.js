@@ -2,6 +2,7 @@ import React, {
 	useState,
 	useEffect,
 	useRef,
+	useCallback,
 	createContext,
 	useContext,
 	useMemo,
@@ -21,9 +22,10 @@ import {
 	ScrollView,
 	ActivityIndicator,
 	Animated,
-	Dimensions,
 	Modal,
 	Linking,
+	useColorScheme,
+	useWindowDimensions,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import DocumentScanner from 'react-native-document-scanner-plugin';
@@ -51,43 +53,82 @@ import {
 	isSupported as isTextExtractionSupported,
 } from 'expo-text-extractor';
 
+import {
+	autoBaseName,
+	formatSizeMB,
+	groupByDate as groupDocsByDate,
+	matchesQuery,
+	nameExists,
+	pageFilesOf,
+	sanitizeBaseName,
+	uniqueBaseName,
+} from './src/lib/documents.js';
+import {
+	PAGE_H,
+	PAGE_MARGINS,
+	PAGE_W,
+	buildPdfHtml,
+} from './src/lib/pdfHtml.js';
+import {
+	QUALITY_PRESETS,
+	SABU_DIR,
+	SETTINGS_FILE,
+	deleteDocument as deleteDocumentFiles,
+	listDir,
+	pageUrisFor,
+	presetFor,
+	writePages,
+} from './src/lib/storage.js';
+import AnimatedCard from './src/components/AnimatedCard.js';
+import DocumentRow from './src/components/DocumentRow.js';
+import ErrorBoundary from './src/components/ErrorBoundary.js';
+import PdfEditor from './src/screens/PdfEditor.js';
+
 // ------------------------------------------------------------------
 // Theme definitions (Dark and Light)
 // ------------------------------------------------------------------
+// Role conventions, so the two palettes stay interchangeable:
+//   primaryBlue / danger  — solid fills, always carry WHITE text
+//   primaryTeal           — text and icons ON a surface; never a fill behind
+//                           white text (it is deliberately light in dark mode)
+//   secondaryTeal         — tint only, always used with an alpha suffix
+//   background            — also the text colour on a primaryTeal fill
 const DARK_THEME = {
-	background: '#0D1117',
-	surface: '#161B22',
-	surfaceHighlight: '#21262D',
-	surfaceElevated: '#1C2129',
-	primaryBlue: '#1A73E8',
-	primaryTeal: '#1DE9B6',
-	secondaryTeal: '#006B5C',
-	accent: '#58A6FF',
-	textMain: '#F0F6FC',
-	textSecondary: '#C9D1D9',
-	textMuted: '#8B949E',
-	danger: '#F85149',
-	warning: '#D29922',
-	success: '#3FB950',
-	overlay: 'rgba(0,0,0,0.6)',
+	background: '#0B0F14',
+	surface: '#151A21',
+	surfaceHighlight: '#222A35',
+	surfaceElevated: '#1B222B',
+	primaryBlue: '#3B82F6',
+	primaryTeal: '#2DD4BF',
+	secondaryTeal: '#0F766E',
+	accent: '#60A5FA',
+	textMain: '#F8FAFC',
+	textSecondary: '#CBD5E1',
+	textMuted: '#8B98A9',
+	danger: '#F87171',
+	warning: '#FBBF24',
+	success: '#34D399',
+	overlay: 'rgba(0,0,0,0.66)',
+	shadow: '#000000',
 };
 
 const LIGHT_THEME = {
-	background: '#F6F8FA',
+	background: '#F5F7FA',
 	surface: '#FFFFFF',
-	surfaceHighlight: '#E1E4E8',
-	surfaceElevated: '#F0F2F5',
-	primaryBlue: '#0969DA',
-	primaryTeal: '#1E7E6C',
-	secondaryTeal: '#A5E8D7',
-	accent: '#1A73E8',
-	textMain: '#24292F',
-	textSecondary: '#57606A',
-	textMuted: '#6E7781',
-	danger: '#CF222E',
+	surfaceHighlight: '#E6EAF0',
+	surfaceElevated: '#EFF3F8',
+	primaryBlue: '#2563EB',
+	primaryTeal: '#0D9488',
+	secondaryTeal: '#5EEAD4',
+	accent: '#1D4ED8',
+	textMain: '#111827',
+	textSecondary: '#475569',
+	textMuted: '#64748B',
+	danger: '#DC2626',
 	warning: '#BF8700',
-	success: '#2DA44E',
-	overlay: 'rgba(0,0,0,0.5)',
+	success: '#059669',
+	overlay: 'rgba(15,23,42,0.45)',
+	shadow: '#0F172A',
 };
 
 const ThemeContext = createContext({
@@ -98,101 +139,8 @@ const ThemeContext = createContext({
 
 const useTheme = () => useContext(ThemeContext);
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const BOTTOM_NAV_HEIGHT = Platform.OS === 'android' ? 88 : 78;
 const BOTTOM_NAV_PADDING = Platform.OS === 'android' ? 16 : 0;
-const SABU_DIR = FileSystem.documentDirectory + 'SabuScan/';
-// Kept outside SABU_DIR so nothing in the library cleanup paths can reach it.
-const SETTINGS_FILE = FileSystem.documentDirectory + 'pdfscan_settings.json';
-
-const PAGE_W = 612; // US Letter at 72 dpi, in points
-const PAGE_H = 792;
-const PAGE_MARGINS = { top: 0, right: 0, bottom: 0, left: 0 };
-// The page box is drawn 1pt under the paper. A block sized to *exactly* the
-// paper height is the classic trigger for a trailing blank page: any sub-pixel
-// rounding in the print engine tips it over the boundary. 1pt is invisible
-// (the image is centred and the box clips) and removes the whole risk class.
-const PAGE_BOX_H = PAGE_H - 1;
-
-// Print CSS for generated PDFs.
-//
-// Never use viewport units (vh/vw) in here. expo-print lays the HTML out in a
-// WebView and then paginates it onto the paper size we ask for, but `vh`
-// resolves against the WebView's own viewport, not the paper. That is what
-// turned every scan into two pages: `min-height:100vh` measured ~1014pt
-// against 792pt of paper, so each image was ~91pt too tall and spilled a
-// sliver onto a phantom page behind it.
-//
-// Fixed pt units are tied to the page size we hand to printToFileAsync, so
-// the layout comes out the same whatever the WebView viewport happens to be.
-const PAGE_CSS =
-	'@page{size:' +
-	PAGE_W +
-	'pt ' +
-	PAGE_H +
-	'pt;margin:0}' +
-	'html,body{margin:0;padding:0;background:#fff}' +
-	'.p{position:relative;width:' +
-	PAGE_W +
-	'pt;height:' +
-	PAGE_BOX_H +
-	'pt;overflow:hidden;display:flex;align-items:center;' +
-	'justify-content:center;page-break-inside:avoid;break-inside:avoid}' +
-	'.p+.p{page-break-before:always;break-before:page}' +
-	'.p img{display:block;max-width:' +
-	PAGE_W +
-	'pt;max-height:' +
-	PAGE_BOX_H +
-	'pt;width:auto;height:auto}';
-
-// Scans go into the PDF at print resolution, not camera resolution. A raw
-// scan is ~2100x3100; embedded untouched, a 13-page receipt batch came out at
-// 43 MB - too big to email and slow to open. Downscaling is what actually
-// shrinks the file; re-encoding on its own barely moves it.
-// ------------------------------------------------------------------
-// Free-tier credit line.
-//
-// This replaces the old diagonal watermark. A band across the middle of an
-// invoice is the reason nobody sends the free tier's output — which killed
-// the only channel by which one user's PDF reaches the next user. A small
-// mark in the bottom margin gets sent, and every sent page is an impression.
-//
-// It is inline SVG rather than a bitmap on purpose: WebKit vectorises it into
-// the PDF, so it stays crisp at any zoom and costs a few hundred bytes.
-// ------------------------------------------------------------------
-const MARK_H = 26; // pt of page reserved for the mark; image shrinks to suit
-const BRAND_BLUE = '#0373FD';
-const BRAND_MARK_SVG =
-	'<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">' +
-	'<rect x="1" y="1" width="22" height="22" rx="5.4" fill="' +
-	BRAND_BLUE +
-	'"/>' +
-	'<path d="M8.4 6.2h4.3l2.9 2.9v8.7H8.4z" fill="#fff"/>' +
-	'<path d="M12.4 6.2v3.2h3.2" fill="#cfe2ff"/></svg>';
-
-// Appended after PAGE_CSS so the tighter image cap wins the cascade.
-const MARK_CSS =
-	// Reserve the strip with padding, not just a shorter image. The image is
-	// flex-centred in .p, so capping its height alone still centres it in the
-	// FULL page box — it sat 13pt inside the mark strip, and on a scan with
-	// content near the bottom edge the mark would print over it. Padding moves
-	// the content box up; the mark is absolutely positioned against the
-	// padding box, so it still sits flush to the paper edge.
-	'.p{padding-bottom:' +
-	MARK_H +
-	'pt;box-sizing:border-box}' +
-	'.p img{max-height:' +
-	(PAGE_BOX_H - MARK_H) +
-	'pt}' +
-	'.mk{position:absolute;left:0;right:0;bottom:0;height:' +
-	MARK_H +
-	'pt;display:flex;align-items:center;justify-content:center;gap:5pt;' +
-	"font:500 8pt -apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif;" +
-	'color:#8A9099;letter-spacing:.3pt}' +
-	'.mk svg{width:13pt;height:13pt;display:block;flex:none}';
-
-const BRAND_MARK_HTML =
-	'<div class="mk">' + BRAND_MARK_SVG + '<span>Scanned with PDFScan</span></div>';
 
 // The document scanner crops to the page it detects, but the crop runs a
 // little wide and catches a ring of whatever the page was lying on. On a
@@ -214,12 +162,6 @@ const EDGE_TRIM = 0.01;
 // once, ever: iOS silently swallows extra requests anyway, and a second ask is
 // how a 5-star user becomes a 1-star review.
 const REVIEW_AFTER_SAVES = 3;
-
-const QUALITY_PRESETS = {
-	High: { maxEdge: 2200, compress: 0.72 }, // ~200 dpi, archival
-	Medium: { maxEdge: 1700, compress: 0.6 }, // ~150 dpi, email-friendly
-	Low: { maxEdge: 1200, compress: 0.45 }, // screen / quick share
-};
 
 // ------------------------------------------------------------------
 // Ad Unit IDs Configuration
@@ -268,7 +210,26 @@ const openUrl = async (url) => {
 };
 
 // Helper to create dynamic styles
-const makeStyles = (theme) =>
+// Window dimensions are passed in, never read from Dimensions.get() at module
+// load. The app ships with orientation "default" and supportsTablet, so it
+// must survive rotation and iPad Split View — a size captured once at import
+// is wrong the moment the window changes, and Apple reviews this on iPad.
+// Cross-platform elevation. iOS wants shadow*, Android wants elevation, and
+// a shadow is only visible on an opaque background — every surface using this
+// sets one.
+const elevation = (theme, level = 1) =>
+	Platform.select({
+		ios: {
+			shadowColor: theme.shadow,
+			shadowOpacity: level === 1 ? 0.1 : 0.18,
+			shadowRadius: level === 1 ? 8 : 18,
+			shadowOffset: { width: 0, height: level === 1 ? 2 : 6 },
+		},
+		android: { elevation: level === 1 ? 2 : 8 },
+		default: {},
+	});
+
+const makeStyles = (theme, win) =>
 	StyleSheet.create({
 		safe: { flex: 1, backgroundColor: theme.background },
 
@@ -364,6 +325,7 @@ const makeStyles = (theme) =>
 			alignItems: 'center',
 			borderWidth: 1,
 			borderColor: theme.surfaceHighlight,
+			...elevation(theme, 1),
 		},
 		emptyRing: {
 			backgroundColor: theme.primaryBlue + '18',
@@ -585,6 +547,7 @@ const makeStyles = (theme) =>
 			overflow: 'hidden',
 			borderWidth: 1,
 			borderColor: theme.surfaceHighlight,
+			...elevation(theme, 1),
 		},
 		recentThumb: {
 			width: '100%',
@@ -616,7 +579,10 @@ const makeStyles = (theme) =>
 			marginBottom: 10,
 			borderWidth: 1,
 			borderColor: theme.surfaceHighlight + '60',
-			overflow: 'hidden',
+			// No overflow:'hidden' here — on iOS that clips the layer and the
+			// shadow above disappears. The inner row is inset by its padding,
+			// so nothing needs clipping anyway.
+			...elevation(theme, 1),
 		},
 		listCardInner: { flexDirection: 'row', alignItems: 'center', padding: 14 },
 		listThumb: {
@@ -693,6 +659,7 @@ const makeStyles = (theme) =>
 			padding: 16,
 			borderWidth: 1,
 			borderColor: theme.surfaceHighlight + '60',
+			...elevation(theme, 1),
 		},
 		settingRow: {
 			flexDirection: 'row',
@@ -733,8 +700,10 @@ const makeStyles = (theme) =>
 		},
 		segBtn: {
 			flex: 1,
+			flexDirection: 'row',
 			paddingVertical: 12,
 			alignItems: 'center',
+			justifyContent: 'center',
 			borderRadius: 10,
 		},
 		segBtnActive: { backgroundColor: theme.primaryBlue },
@@ -785,12 +754,12 @@ const makeStyles = (theme) =>
 		},
 		navScanWrap: { alignItems: 'center', position: 'relative', top: -18 },
 		navScanRing: {
-			backgroundColor: theme.secondaryTeal + '30',
+			backgroundColor: theme.primaryBlue + '2E',
 			padding: 4,
 			borderRadius: 24,
 		},
 		navScanBtn: {
-			backgroundColor: theme.secondaryTeal,
+			backgroundColor: theme.primaryBlue,
 			width: 58,
 			height: 58,
 			borderRadius: 20,
@@ -816,7 +785,7 @@ const makeStyles = (theme) =>
 			borderTopLeftRadius: 24,
 			borderTopRightRadius: 24,
 			paddingBottom: Platform.OS === 'ios' ? 44 : 24,
-			maxHeight: SCREEN_HEIGHT * 0.85,
+			maxHeight: win.height * 0.85,
 		},
 		modalHandle: {
 			width: 40,
@@ -855,8 +824,8 @@ const makeStyles = (theme) =>
 			paddingHorizontal: 20,
 		},
 		modalPreviewImg: {
-			width: SCREEN_WIDTH * 0.52,
-			height: SCREEN_WIDTH * 0.68,
+			width: Math.min(win.width * 0.52, 320),
+			height: Math.min(win.width * 0.68, 420),
 			borderRadius: 14,
 			resizeMode: 'cover',
 			backgroundColor: '#fff',
@@ -882,6 +851,47 @@ const makeStyles = (theme) =>
 			fontSize: 15,
 			fontWeight: '700',
 			marginTop: 2,
+		},
+		modalPrimaryRow: {
+			flexDirection: 'row',
+			gap: 10,
+			marginHorizontal: 24,
+			marginTop: 6,
+		},
+		modalEditBtn: {
+			flex: 1,
+			flexDirection: 'row',
+			alignItems: 'center',
+			justifyContent: 'center',
+			gap: 9,
+			paddingVertical: 15,
+			borderRadius: 14,
+			backgroundColor: theme.primaryTeal,
+		},
+		modalOcrBtn: {
+			flexDirection: 'row',
+			alignItems: 'center',
+			justifyContent: 'center',
+			gap: 7,
+			paddingHorizontal: 18,
+			paddingVertical: 15,
+			borderRadius: 14,
+			backgroundColor: theme.surfaceHighlight,
+		},
+		modalOcrLabel: {
+			color: theme.primaryTeal,
+			fontWeight: '800',
+			fontSize: 13,
+			letterSpacing: 0.6,
+		},
+		modalEditBtnMuted: {
+			backgroundColor: theme.surfaceHighlight,
+		},
+		modalEditLabel: {
+			color: '#fff',
+			fontWeight: '800',
+			fontSize: 13,
+			letterSpacing: 0.6,
 		},
 		modalActions: {
 			flexDirection: 'row',
@@ -985,44 +995,22 @@ const makeStyles = (theme) =>
 // ------------------------------------------------------------------
 // Animated wrapper
 // ------------------------------------------------------------------
-const AnimatedCard = ({ children, style, delay = 0 }) => {
-	const fade = useRef(new Animated.Value(0)).current;
-	const slide = useRef(new Animated.Value(24)).current;
-
-	useEffect(() => {
-		Animated.parallel([
-			Animated.timing(fade, {
-				toValue: 1,
-				duration: 380,
-				delay,
-				useNativeDriver: true,
-			}),
-			Animated.timing(slide, {
-				toValue: 0,
-				duration: 380,
-				delay,
-				useNativeDriver: true,
-			}),
-		]).start();
-	}, []);
-
-	return (
-		<Animated.View
-			style={[style, { opacity: fade, transform: [{ translateY: slide }] }]}>
-			{children}
-		</Animated.View>
-	);
-};
-
 // ------------------------------------------------------------------
 // Main App Component
 // ------------------------------------------------------------------
 export default function App() {
-	const [isDark, setIsDark] = useState(true);
+	// Theme preference is three-way: follow the device, or pin light/dark.
+	// It used to be a single boolean hardcoded to dark, so the app ignored the
+	// system setting entirely and opened dark on a device set to light.
+	const systemScheme = useColorScheme();
+	const [themeMode, setThemeMode] = useState('system');
+	const isDark =
+		themeMode === 'system' ? systemScheme !== 'light' : themeMode === 'dark';
 	const theme = isDark ? DARK_THEME : LIGHT_THEME;
-	const styles = useMemo(() => makeStyles(theme), [theme]);
+	const win = useWindowDimensions();
+	const styles = useMemo(() => makeStyles(theme, win), [theme, win.width, win.height]);
 
-	const toggleTheme = () => setIsDark((prev) => !prev);
+	const toggleTheme = () => setThemeMode(isDark ? 'light' : 'dark');
 
 	const [activeTab, setActiveTab] = useState('scan');
 
@@ -1047,6 +1035,15 @@ export default function App() {
 	// Preview modal
 	const [previewDoc, setPreviewDoc] = useState(null);
 	const [previewVisible, setPreviewVisible] = useState(false);
+
+	// Page editor
+	const [editorDoc, setEditorDoc] = useState(null);
+	const [editorVisible, setEditorVisible] = useState(false);
+
+	// Real on-disk usage, measured only while Settings is open. It needs a
+	// stat per file, which is far too much work to repeat on every library
+	// refresh just to fill in one row the user is usually not looking at.
+	const [diskUsageMB, setDiskUsageMB] = useState(null);
 
 	// Search
 	const [searchQuery, setSearchQuery] = useState('');
@@ -1084,7 +1081,12 @@ export default function App() {
 					// Validate each field rather than spreading blindly — a
 					// half-written or hand-edited file must not be able to put
 					// the app into a state the UI cannot represent.
-					if (typeof saved.isDark === 'boolean') setIsDark(saved.isDark);
+					if (['system', 'light', 'dark'].includes(saved.themeMode)) {
+						setThemeMode(saved.themeMode);
+					} else if (typeof saved.isDark === 'boolean') {
+						// Carry over the old boolean from an earlier version.
+						setThemeMode(saved.isDark ? 'dark' : 'light');
+					}
 					if (typeof saved.autoCrop === 'boolean') setAutoCrop(saved.autoCrop);
 					if (typeof saved.autoSaveToGallery === 'boolean')
 						setAutoSaveToGallery(saved.autoSaveToGallery);
@@ -1112,6 +1114,7 @@ export default function App() {
 				await FileSystem.writeAsStringAsync(
 					SETTINGS_FILE,
 					JSON.stringify({
+						themeMode,
 						isDark,
 						autoCrop,
 						autoSaveToGallery,
@@ -1126,6 +1129,7 @@ export default function App() {
 			}
 		})();
 	}, [
+		themeMode,
 		isDark,
 		autoCrop,
 		autoSaveToGallery,
@@ -1503,18 +1507,43 @@ export default function App() {
 		return () => clearInterval(timer);
 	}, [adFreeUntil]);
 
+	useEffect(() => {
+		if (activeTab !== 'settings') return;
+		let cancelled = false;
+		(async () => {
+			try {
+				const files = await listDir();
+				let total = 0;
+				for (const f of files) {
+					const info = await FileSystem.getInfoAsync(SABU_DIR + f);
+					total += info.size || 0;
+				}
+				if (!cancelled) setDiskUsageMB(formatSizeMB(total));
+			} catch (error) {
+				console.log('Could not measure storage:', error);
+				if (!cancelled) setDiskUsageMB(null);
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [activeTab, savedDocuments]);
+
 	const loadLibraryFiles = async () => {
 		setIsLoading(true);
 		try {
-			const dirInfo = await FileSystem.getInfoAsync(SABU_DIR);
-			if (!dirInfo.exists) {
-				await FileSystem.makeDirectoryAsync(SABU_DIR, { intermediates: true });
-			}
-			const files = await FileSystem.readDirectoryAsync(SABU_DIR);
+			// One directory listing answers every existence question below.
+			// This used to issue three getInfoAsync calls per document (pdf,
+			// thumbnail, metadata) on top of the listing it already had, so a
+			// 60-document library made ~180 filesystem round-trips to draw one
+			// screen. Only the PDF still needs a stat, for its size and mtime.
+			const files = await listDir();
+			const present = new Set(files);
 			const pdfFiles = files.filter((f) => f.endsWith('.pdf'));
+
 			const fileData = await Promise.all(
 				pdfFiles.map(async (fileName) => {
-					const baseName = fileName.replace('.pdf', '');
+					const baseName = fileName.slice(0, -4);
 					const fileUri = SABU_DIR + fileName;
 					const info = await FileSystem.getInfoAsync(fileUri);
 					const modTime = info.modificationTime || Date.now() / 1000;
@@ -1528,23 +1557,27 @@ export default function App() {
 						hour: '2-digit',
 						minute: '2-digit',
 					});
-					const sizeMB = ((info.size || 0) / (1024 * 1024)).toFixed(2);
-					const thumbUri = SABU_DIR + baseName + '_thumb.jpg';
-					const metaUri = SABU_DIR + baseName + '_meta.json';
-					const thumbOk = (await FileSystem.getInfoAsync(thumbUri)).exists;
-					let pages = 1;
+
+					const thumbName = baseName + '_thumb.jpg';
+					const metaName = baseName + '_meta.json';
+					const pageFiles = pageFilesOf(files, baseName);
+
+					let pages = pageFiles.length || 1;
 					let tags = [];
-					const metaOk = (await FileSystem.getInfoAsync(metaUri)).exists;
-					if (metaOk) {
+					if (present.has(metaName)) {
 						try {
-							const raw = await FileSystem.readAsStringAsync(metaUri, {
-								encoding: 'utf8',
-							});
-							const meta = JSON.parse(raw);
-							pages = meta.pages || 1;
+							const meta = JSON.parse(
+								await FileSystem.readAsStringAsync(SABU_DIR + metaName, {
+									encoding: 'utf8',
+								}),
+							);
+							// The page files are the document; metadata only fills
+							// in for older documents that have none.
+							if (!pageFiles.length && meta.pages) pages = meta.pages;
 							tags = meta.tags || [];
 						} catch (_) {}
 					}
+
 					return {
 						id: fileName,
 						title: baseName,
@@ -1553,10 +1586,15 @@ export default function App() {
 						date,
 						time,
 						timestamp: modTime,
-						size: sizeMB,
+						size: formatSizeMB(info.size),
 						pages,
 						tags,
-						thumbnailUri: thumbOk ? thumbUri : null,
+						format: 'PDF',
+						// Documents saved before page images were kept have
+						// nothing to edit; the library says so rather than
+						// opening an empty editor.
+						editable: pageFiles.length > 0,
+						thumbnailUri: present.has(thumbName) ? SABU_DIR + thumbName : null,
 					};
 				}),
 			);
@@ -1678,6 +1716,55 @@ export default function App() {
 		}
 	};
 
+	// ------------------------------------------------------------------
+	// Page sources for the editor.
+	//
+	// These return the picked uris instead of pushing them into the scan
+	// tray, so the editor can append pages to an existing document without
+	// disturbing whatever the Scan tab is holding.
+	// ------------------------------------------------------------------
+	const scanPagesForEditor = async () => {
+		try {
+			const result = await DocumentScanner.scanDocument({
+				maxNumDocuments: 20,
+				letUserAdjustCrop: autoCrop,
+			});
+			return result.scannedImages || [];
+		} catch (error) {
+			console.log('Scanner cancelled or failed', error);
+			return [];
+		}
+	};
+
+	const pickPagesForEditor = async () => {
+		try {
+			const result = await ImagePicker.launchImageLibraryAsync({
+				mediaTypes: ['images'],
+				allowsMultipleSelection: true,
+				quality: 1,
+			});
+			if (result.canceled || !result.assets) return [];
+			return result.assets.map((a) => a.uri);
+		} catch (error) {
+			console.log('Gallery picker failed', error);
+			return [];
+		}
+	};
+
+	const openEditor = (doc) => {
+		if (!doc) return;
+		if (!doc.editable) {
+			showThemedAlert(
+				'Pages not available',
+				`"${doc.title}" was created before page editing was added, so its pages are not stored on this device. New scans can be edited — and this document can still be shared, renamed or deleted.`,
+			);
+			return;
+		}
+		setPreviewVisible(false);
+		setEditorDoc(doc);
+		setEditorVisible(true);
+	};
+
 	const handleScan = async () => {
 		setActiveTab('scan');
 		try {
@@ -1698,7 +1785,7 @@ export default function App() {
 		setActiveTab('scan');
 		try {
 			const result = await ImagePicker.launchImageLibraryAsync({
-				mediaTypes: ImagePicker.MediaTypeOptions.Images,
+				mediaTypes: ['images'],
 				allowsMultipleSelection: true,
 				quality: 1,
 			});
@@ -1718,8 +1805,12 @@ export default function App() {
 	// Apple Vision on iOS, Google ML Kit on Android. Runs fully offline;
 	// no image ever leaves the device.
 	// ------------------------------------------------------------------
-	const extractOCR = async () => {
-		if (scannedImages.length === 0 || isExtractingOCR) return;
+	// Runs over any list of page images — the scan tray, or a saved
+	// document's stored pages. Text recognition used to be reachable only
+	// from the Scan tab, so once a document was saved there was no way to
+	// pull its text back out.
+	const runOcrOn = async (imageUris) => {
+		if (!imageUris || imageUris.length === 0 || isExtractingOCR) return;
 
 		if (!isTextExtractionSupported) {
 			showThemedAlert(
@@ -1731,15 +1822,15 @@ export default function App() {
 		}
 
 		setIsExtractingOCR(true);
-		setOcrProgress({ current: 0, total: scannedImages.length });
+		setOcrProgress({ current: 0, total: imageUris.length });
 
 		try {
 			const pages = [];
 
-			for (let i = 0; i < scannedImages.length; i++) {
-				setOcrProgress({ current: i + 1, total: scannedImages.length });
+			for (let i = 0; i < imageUris.length; i++) {
+				setOcrProgress({ current: i + 1, total: imageUris.length });
 				try {
-					const lines = await extractTextFromImage(scannedImages[i]);
+					const lines = await extractTextFromImage(imageUris[i]);
 					pages.push({
 						page: i + 1,
 						text: Array.isArray(lines) ? lines.join('\n').trim() : '',
@@ -1775,6 +1866,22 @@ export default function App() {
 				[{ text: 'OK', style: 'default', onPress: () => {} }],
 			);
 		}
+	};
+
+	const extractOCR = () => runOcrOn(scannedImages);
+
+	const extractOcrFromDocument = async (doc) => {
+		if (!doc) return;
+		if (!doc.editable) {
+			showThemedAlert(
+				'Pages not available',
+				`"${doc.title}" was created before page images were stored, so there is nothing to read text from. Newly scanned documents support this.`,
+			);
+			return;
+		}
+		setPreviewVisible(false);
+		const files = await listDir();
+		await runOcrOn(pageUrisFor(files, doc.title));
 	};
 
 	const ocrPlainText = () =>
@@ -1820,88 +1927,55 @@ export default function App() {
 		// Free tier gets a small credit line in the bottom margin. Every
 		// feature stays available — the mark is the only difference, and it
 		// sits in reserved space so it never covers the scan.
-		const showMark = !isPro;
-		const markCss = showMark ? MARK_CSS : '';
-		const markHtml = showMark ? BRAND_MARK_HTML : '';
-
-		const html =
-			'<!DOCTYPE html><html><head>' +
-			'<meta name="color-scheme" content="light only">' +
-			'<style>' +
-			':root{color-scheme:light}' +
-			PAGE_CSS +
-			markCss +
-			'</style></head><body>' +
-			b64Images
-				.map(
-					(src) =>
-						'<div class="p"><img src="' +
-						src +
-						'"/>' +
-						markHtml +
-						'</div>',
-				)
-				.join('') +
-			'</body></html>';
 		const { uri: tmpPdf } = await Print.printToFileAsync({
-			html,
+			html: buildPdfHtml(
+				b64Images.map((src) => ({ src })),
+				{ showMark: !isPro },
+			),
 			width: PAGE_W,
 			height: PAGE_H,
 			margins: PAGE_MARGINS,
 		});
 		const finalUri = SABU_DIR + baseName + '.pdf';
+		await FileSystem.deleteAsync(finalUri, { idempotent: true });
 		await FileSystem.copyAsync({ from: tmpPdf, to: finalUri });
+		await FileSystem.deleteAsync(tmpPdf, { idempotent: true });
 		return finalUri;
 	};
 
-	const saveAsImages = async (baseName, imageUris, format) => {
-		const ext = format.toLowerCase();
-		const savedFiles = [];
-		for (let i = 0; i < imageUris.length; i++) {
-			// Same edge trim as the PDF path, so JPEG/PNG exports don't come
-			// out framed by background the PDF doesn't have.
-			let manipulated = await manipulateAsync(imageUris[i], [], {
+	// Image export.
+	//
+	// Writes to the cache, never into the library directory. Those files used
+	// to be named `<doc>_pageN.jpg` inside the library — exactly the names a
+	// document's own stored pages use — so an image export and a document
+	// would overwrite each other's pages.
+	const exportPagesAsImages = async (baseName, pageUris, format) => {
+		const ext = format === 'JPEG' ? 'jpg' : 'png';
+		const dir = `${FileSystem.cacheDirectory}pdfscan-export-${Date.now()}/`;
+		await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+		const exported = [];
+		for (let i = 0; i < pageUris.length; i++) {
+			const converted = await manipulateAsync(pageUris[i], [], {
 				compress: 1,
 				format: format === 'JPEG' ? SaveFormat.JPEG : SaveFormat.PNG,
 			});
-			if (trimScanEdges) {
-				manipulated = await trimEdges(manipulated, { compress: 1 });
-			}
-			const destPath = SABU_DIR + `${baseName}_page${i + 1}.${ext}`;
-			await FileSystem.copyAsync({ from: manipulated.uri, to: destPath });
-			savedFiles.push(destPath);
+			const dest = `${dir}${baseName}_page${i + 1}.${ext}`;
+			await FileSystem.copyAsync({ from: converted.uri, to: dest });
+			exported.push(dest);
 		}
-		if (imageUris.length > 0) {
-			const thumb = await manipulateAsync(
-				imageUris[0],
-				[{ resize: { width: 300 } }],
-				{
-					compress: 0.5,
-					format: SaveFormat.JPEG,
-				},
-			);
-			await FileSystem.copyAsync({
-				from: thumb.uri,
-				to: SABU_DIR + baseName + '_thumb.jpg',
-			});
-		}
-		return savedFiles;
+		return exported;
 	};
 
 	const savePDFDirectly = async () => {
 		if (scannedImages.length === 0) return;
 		setIsSaving(true);
 		try {
-			let baseName =
-				documentName.trim() === ''
-					? 'Scan_' + new Date().toISOString().slice(0, 10) + '_' + Date.now()
-					: documentName.replace(/[^a-zA-Z0-9_\- ]/g, '_');
-			const existingPdf = SABU_DIR + baseName + '.pdf';
-			let hasExisting = (await FileSystem.getInfoAsync(existingPdf)).exists;
-			if (!hasExisting && activeFormat !== 'PDF') {
-				const firstImage = SABU_DIR + `${baseName}_page1.jpg`;
-				hasExisting = (await FileSystem.getInfoAsync(firstImage)).exists;
-			}
+			const dirFiles = await listDir();
+			const requested = sanitizeBaseName(documentName);
+			// An empty or unusable name gets an automatic one, and that one is
+			// made unique rather than silently overwriting a same-second scan.
+			let baseName = requested || uniqueBaseName(dirFiles, autoBaseName());
+			const hasExisting = !!requested && nameExists(dirFiles, baseName);
 			if (hasExisting) {
 				const userChoice = await new Promise((resolve) => {
 					showThemedAlert(
@@ -1925,92 +1999,91 @@ export default function App() {
 					setIsSaving(false);
 					return;
 				}
-				if (activeFormat === 'PDF') {
-					await FileSystem.deleteAsync(existingPdf, { idempotent: true });
-				} else {
-					const files = await FileSystem.readDirectoryAsync(SABU_DIR);
-					const toDelete = files.filter(
-						(f) =>
-							f.startsWith(baseName) &&
-							(f.endsWith('.jpg') || f.endsWith('.png')),
-					);
-					for (const f of toDelete) {
-						await FileSystem.deleteAsync(SABU_DIR + f, { idempotent: true });
-					}
-				}
-				await FileSystem.deleteAsync(SABU_DIR + baseName + '_thumb.jpg', {
-					idempotent: true,
-				});
-				await FileSystem.deleteAsync(SABU_DIR + baseName + '_meta.json', {
-					idempotent: true,
-				});
+				// Remove every file THIS document owns, and nothing else. The
+				// previous rule deleted anything whose name merely started with
+				// the same text, so overwriting "Invoice" also destroyed the
+				// pages and thumbnail of "Invoice2".
+				await deleteDocumentFiles(baseName);
 			}
 
-			const preset = QUALITY_PRESETS[pdfQuality] || QUALITY_PRESETS.Medium;
-			const isPdf = activeFormat === 'PDF';
+			const preset = presetFor(pdfQuality);
 
 			// One page at a time. This used to run every page through
 			// Promise.all, so a 20-page scan decoded 20 full-resolution
 			// bitmaps at once and then held three copies of each base64
 			// string (raw, prefixed, joined) - enough to get the app killed
-			// mid-save. Image exports skip the pass entirely now:
-			// saveAsImages works from the originals, so re-encoding here was
-			// pure waste for JPEG/PNG.
+			// mid-save.
 			const pageSources = [];
+			const preparedPages = [];
 			for (let idx = 0; idx < scannedImages.length; idx++) {
-				const preparedUri = isPdf
-					? await prepareScanForPdf(scannedImages[idx], preset)
-					: scannedImages[idx];
-				if (idx === 0 && isPdf) {
+				const preparedUri = await prepareScanForPdf(scannedImages[idx], preset);
+				if (idx === 0) {
 					const thumb = await manipulateAsync(
 						preparedUri,
 						[{ resize: { width: 300 } }],
 						{ compress: 0.5, format: SaveFormat.JPEG },
 					);
+					await FileSystem.deleteAsync(SABU_DIR + baseName + '_thumb.jpg', {
+						idempotent: true,
+					});
 					await FileSystem.copyAsync({
 						from: thumb.uri,
 						to: SABU_DIR + baseName + '_thumb.jpg',
 					});
 				}
-				if (isPdf) {
-					const b64 = await FileSystem.readAsStringAsync(preparedUri, {
-						encoding: 'base64',
-					});
-					pageSources.push('data:image/jpeg;base64,' + b64);
-				}
+				preparedPages.push(preparedUri);
+				const b64 = await FileSystem.readAsStringAsync(preparedUri, {
+					encoding: 'base64',
+				});
+				pageSources.push('data:image/jpeg;base64,' + b64);
 			}
 
-			let resultMessage = '';
-			if (activeFormat === 'PDF') {
-				const finalUri = await saveAsPDF(baseName, pageSources);
-				resultMessage = `PDF "${baseName}.pdf" (${scannedImages.length} page${scannedImages.length > 1 ? 's' : ''}) saved.`;
-				if (autoSaveToGallery) {
-					try {
-						// Ask only at the moment we actually need gallery access.
-						const { granted } = await MediaLibrary.requestPermissionsAsync();
-						if (granted) {
-							const asset = await MediaLibrary.createAssetAsync(finalUri);
-							const album = await MediaLibrary.getAlbumAsync('SabuScan');
-							if (!album) {
-								await MediaLibrary.createAlbumAsync('SabuScan', asset, false);
-							} else {
-								await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-							}
+			// Every document is stored the same way: a PDF plus the pages it
+			// was built from.
+			//
+			// The pages used to be discarded for PDFs, so a saved PDF could
+			// never be edited and merging one fell through to its 300px
+			// thumbnail — every multi-document share produced an unreadable
+			// file. JPEG/PNG, meanwhile, wrote page images but no PDF, and the
+			// library only ever listed PDFs — so choosing JPEG made the
+			// document vanish the moment it was saved. One model fixes both,
+			// and image output becomes what it always really was: an export.
+			await writePages(baseName, preparedPages);
+			const finalUri = await saveAsPDF(baseName, pageSources);
+
+			if (autoSaveToGallery) {
+				try {
+					// Ask only at the moment we actually need gallery access.
+					const { granted } = await MediaLibrary.requestPermissionsAsync();
+					if (granted) {
+						const asset = await MediaLibrary.createAssetAsync(finalUri);
+						const album = await MediaLibrary.getAlbumAsync('SabuScan');
+						if (!album) {
+							await MediaLibrary.createAlbumAsync('SabuScan', asset, false);
+						} else {
+							await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
 						}
-					} catch (_) {}
-				}
-				const savedSoFar = saveCount + 1;
-				setSaveCount(savedSoFar);
+					}
+				} catch (_) {}
+			}
+
+			const savedSoFar = saveCount + 1;
+			setSaveCount(savedSoFar);
+			const pageCount = scannedImages.length;
+			const plural = pageCount > 1 ? 's' : '';
+
+			if (activeFormat === 'PDF') {
 				showThemedAlert(
-					`Saved as PDF`,
-					resultMessage + '\n\nExport / Share now?',
+					'Saved',
+					`"${baseName}.pdf" (${pageCount} page${plural}) is in your library.\n\nShare it now?`,
 					[
 						{
-							text: 'Export / Share',
+							text: 'Share',
 							onPress: async () => {
 								if (await Sharing.isAvailableAsync()) {
 									await Sharing.shareAsync(finalUri, {
 										mimeType: 'application/pdf',
+										UTI: 'com.adobe.pdf',
 									});
 								}
 								// Asked after the share sheet closes, not before —
@@ -2027,25 +2100,21 @@ export default function App() {
 					],
 				);
 			} else {
-				const savedFiles = await saveAsImages(
+				const exported = await exportPagesAsImages(
 					baseName,
-					scannedImages,
+					preparedPages,
 					activeFormat,
 				);
-				resultMessage = `${savedFiles.length} image file${savedFiles.length > 1 ? 's' : ''} saved as ${activeFormat} in the app folder.`;
-				const savedSoFar = saveCount + 1;
-				setSaveCount(savedSoFar);
 				showThemedAlert(
-					`Saved as ${activeFormat}`,
-					resultMessage +
-						'\n\nWould you like to share these images one by one?',
+					'Saved',
+					`"${baseName}" is in your library, and ${exported.length} ${activeFormat} image${exported.length > 1 ? 's are' : ' is'} ready to share.`,
 					[
 						{
-							text: 'Share All',
+							text: `Share ${activeFormat}`,
 							onPress: async () => {
-								for (let i = 0; i < savedFiles.length; i++) {
+								for (let i = 0; i < exported.length; i++) {
 									if (await Sharing.isAvailableAsync()) {
-										await Sharing.shareAsync(savedFiles[i], {
+										await Sharing.shareAsync(exported[i], {
 											mimeType:
 												activeFormat === 'JPEG' ? 'image/jpeg' : 'image/png',
 											dialogTitle: `Share page ${i + 1}`,
@@ -2070,7 +2139,10 @@ export default function App() {
 					pages: scannedImages.length,
 					createdAt: new Date().toISOString(),
 					quality: pdfQuality,
-					format: activeFormat,
+					// The document itself is always a PDF now; this records
+					// which image format was also exported, if any.
+					format: 'PDF',
+					exportedAs: activeFormat === 'PDF' ? null : activeFormat,
 					tags: [],
 				}),
 			);
@@ -2238,46 +2310,8 @@ export default function App() {
 				title: 'Generating combined PDF…',
 			});
 
-			// Build a single HTML document with all pages
-			const showMark = !isPro;
-			const markCss = showMark ? MARK_CSS : '';
-			const markHtml = showMark ? BRAND_MARK_HTML : '';
-
-			const pagesHtml = allPages
-				.map((page) => {
-					if (page.textOnly) {
-						return (
-							'<div class="p" style="flex-direction:column;' +
-							'font-family:-apple-system,Helvetica,Arial,sans-serif">' +
-							'<h2 style="color:#333;margin:0 0 8pt">' +
-							page.label +
-							'</h2>' +
-							'<p style="color:#888;margin:0">' +
-							page.pages +
-							' page(s) • ' +
-							page.size +
-							' MB</p>' +
-							'</div>'
-						);
-					}
-					return (
-						'<div class="p"><img src="' + page.src + '"/>' + markHtml + '</div>'
-					);
-				})
-				.join('');
-
-			const html =
-				'<!DOCTYPE html><html><head>' +
-				'<meta name="color-scheme" content="light only">' +
-				'<style>:root{color-scheme:light}' +
-				PAGE_CSS +
-				markCss +
-				'</style></head><body>' +
-				pagesHtml +
-				'</body></html>';
-
 			const { uri: tmpPdf } = await Print.printToFileAsync({
-				html,
+				html: buildPdfHtml(allPages, { showMark: !isPro }),
 				width: PAGE_W,
 				height: PAGE_H,
 				margins: PAGE_MARGINS,
@@ -2325,27 +2359,7 @@ export default function App() {
 						for (const id of Object.keys(selectedIds)) {
 							const doc = savedDocuments.find((d) => d.id === id);
 							if (!doc) continue;
-							await FileSystem.deleteAsync(doc.uri, { idempotent: true });
-							await FileSystem.deleteAsync(
-								SABU_DIR + doc.title + '_thumb.jpg',
-								{ idempotent: true },
-							);
-							await FileSystem.deleteAsync(
-								SABU_DIR + doc.title + '_meta.json',
-								{ idempotent: true },
-							);
-							const files = await FileSystem.readDirectoryAsync(SABU_DIR);
-							const toDelete = files.filter(
-								(f) =>
-									f.startsWith(doc.title) &&
-									(f.endsWith('.jpg') || f.endsWith('.png')) &&
-									f !== doc.title + '_thumb.jpg',
-							);
-							for (const f of toDelete) {
-								await FileSystem.deleteAsync(SABU_DIR + f, {
-									idempotent: true,
-								});
-							}
+							await deleteDocumentFiles(doc.title);
 						}
 						exitSelection();
 						await loadLibraryFiles();
@@ -2356,72 +2370,54 @@ export default function App() {
 		);
 	};
 
-	const handleDocPress = (doc) => {
-		if (selectionMode) {
-			toggleSelect(doc.id);
-			return;
+	// These three are the props DocumentRow memoises against, so they have to
+	// keep their identity between renders or every row re-renders anyway.
+	const handleDocPress = useCallback(
+		(doc) => {
+			if (selectionMode) {
+				toggleSelect(doc.id);
+				return;
+			}
+			setPreviewDoc(doc);
+			setPreviewVisible(true);
+		},
+		[selectionMode],
+	);
+
+	const handleDocLongPress = useCallback(
+		(doc) => {
+			if (!selectionMode) {
+				setSelectionMode(true);
+				setSelectedIds({ [doc.id]: true });
+			}
+		},
+		[selectionMode],
+	);
+
+	const shareDocument = useCallback(async (doc) => {
+		try {
+			if (await Sharing.isAvailableAsync()) {
+				await Sharing.shareAsync(doc.uri, {
+					mimeType: 'application/pdf',
+					UTI: 'com.adobe.pdf',
+				});
+			}
+		} catch (error) {
+			console.log('Could not share document:', error);
 		}
-		setPreviewDoc(doc);
-		setPreviewVisible(true);
-	};
+	}, []);
 
-	const handleDocLongPress = (doc) => {
-		if (!selectionMode) {
-			setSelectionMode(true);
-			setSelectedIds({ [doc.id]: true });
-		}
-	};
+	const filtered = useMemo(
+		() => savedDocuments.filter((d) => matchesQuery(d, searchQuery)),
+		[savedDocuments, searchQuery],
+	);
 
-	const filtered = useMemo(() => {
-		const q = searchQuery.trim().toLowerCase();
-		if (!q) return savedDocuments;
-		return savedDocuments.filter(
-			(d) =>
-				d.title.toLowerCase().includes(q) || d.date.toLowerCase().includes(q),
-		);
-	}, [savedDocuments, searchQuery]);
-
-	const groupByDate = (docs) => {
-		const groups = {};
-		const now = new Date();
-		const today = new Date(
-			now.getFullYear(),
-			now.getMonth(),
-			now.getDate(),
-		).getTime();
-		const yest = today - 86400000;
-		const week = today - 7 * 86400000;
-		docs.forEach((doc) => {
-			const t = new Date(doc.timestamp * 1000).getTime();
-			let label;
-			if (t >= today) label = 'Today';
-			else if (t >= yest) label = 'Yesterday';
-			else if (t >= week) label = 'This Week';
-			else label = doc.date;
-			if (!groups[label]) groups[label] = [];
-			groups[label].push(doc);
-		});
-		return Object.entries(groups).map(([label, items]) => ({ label, items }));
-	};
+	// Grouping walks the whole library, so it is memoised rather than re-run
+	// on every keystroke and every unrelated state change.
+	const grouped = useMemo(() => groupDocsByDate(filtered), [filtered]);
 
 	const deleteDocument = async (doc) => {
-		await FileSystem.deleteAsync(doc.uri, { idempotent: true });
-		await FileSystem.deleteAsync(SABU_DIR + doc.title + '_thumb.jpg', {
-			idempotent: true,
-		});
-		await FileSystem.deleteAsync(SABU_DIR + doc.title + '_meta.json', {
-			idempotent: true,
-		});
-		const files = await FileSystem.readDirectoryAsync(SABU_DIR);
-		const toDelete = files.filter(
-			(f) =>
-				f.startsWith(doc.title) &&
-				(f.endsWith('.jpg') || f.endsWith('.png')) &&
-				f !== doc.title + '_thumb.jpg',
-		);
-		for (const f of toDelete) {
-			await FileSystem.deleteAsync(SABU_DIR + f, { idempotent: true });
-		}
+		await deleteDocumentFiles(doc.title);
 		await loadLibraryFiles();
 	};
 
@@ -2507,6 +2503,39 @@ export default function App() {
 								</View>
 							))}
 						</View>
+						{/* Editing is the primary action on a document, so it gets
+						    its own full-width row above the share/export group. */}
+						<View style={styles.modalPrimaryRow}>
+							<TouchableOpacity
+								style={[
+									styles.modalEditBtn,
+									!previewDoc?.editable && styles.modalEditBtnMuted,
+								]}
+								onPress={() => openEditor(previewDoc)}>
+								<MaterialCommunityIcons
+									name='file-document-edit-outline'
+									size={18}
+									color={previewDoc?.editable ? '#fff' : theme.textMuted}
+								/>
+								<Text
+									style={[
+										styles.modalEditLabel,
+										!previewDoc?.editable && { color: theme.textMuted },
+									]}>
+									{previewDoc?.editable ? 'EDIT PAGES' : 'PAGES NOT STORED'}
+								</Text>
+							</TouchableOpacity>
+							<TouchableOpacity
+								style={styles.modalOcrBtn}
+								onPress={() => extractOcrFromDocument(previewDoc)}>
+								<MaterialCommunityIcons
+									name='text-recognition'
+									size={18}
+									color={theme.primaryTeal}
+								/>
+								<Text style={styles.modalOcrLabel}>TEXT</Text>
+							</TouchableOpacity>
+						</View>
 						<View style={styles.modalActions}>
 							<TouchableOpacity
 								style={[
@@ -2529,10 +2558,17 @@ export default function App() {
 								/>
 								<Text style={styles.modalActionLabel}>Share</Text>
 							</TouchableOpacity>
+							{/* Tinted rather than filled: secondaryTeal is a light
+							    colour in the light theme, so white-on-teal made this
+							    button all but invisible there. */}
 							<TouchableOpacity
 								style={[
 									styles.modalActionBtn,
-									{ backgroundColor: theme.secondaryTeal },
+									{
+										backgroundColor: theme.secondaryTeal + '2E',
+										borderWidth: 1,
+										borderColor: theme.primaryTeal + '55',
+									},
 								]}
 								onPress={async () => {
 									setPreviewVisible(false);
@@ -2547,9 +2583,15 @@ export default function App() {
 								<Feather
 									name='download'
 									size={16}
-									color='#fff'
+									color={theme.primaryTeal}
 								/>
-								<Text style={styles.modalActionLabel}>Export</Text>
+								<Text
+									style={[
+										styles.modalActionLabel,
+										{ color: theme.primaryTeal },
+									]}>
+									Export
+								</Text>
 							</TouchableOpacity>
 							<TouchableOpacity
 								style={[
@@ -2594,7 +2636,6 @@ export default function App() {
 
 	const renderLibrary = () => {
 		const recent = filtered.slice(0, 5);
-		const grouped = groupByDate(filtered);
 		return (
 			<View style={styles.tab}>
 				{selectionMode ? (
@@ -2801,106 +2842,20 @@ export default function App() {
 										<Text style={styles.sectionTitle}>
 											{item.label.toUpperCase()}
 										</Text>
-										{item.items.map((doc, idx) => {
-											const sel = !!selectedIds[doc.id];
-											return (
-												<AnimatedCard
-													key={doc.id}
-													delay={Math.min(idx, 5) * 45}
-													style={[
-														styles.listCard,
-														sel && styles.selectedBorder,
-													]}>
-													<TouchableOpacity
-														activeOpacity={0.75}
-														onPress={() => handleDocPress(doc)}
-														onLongPress={() => handleDocLongPress(doc)}
-														delayLongPress={350}
-														style={styles.listCardInner}>
-														{selectionMode && (
-															<View
-																style={[
-																	styles.checkbox,
-																	sel && styles.checkboxOn,
-																]}>
-																{sel && (
-																	<Feather
-																		name='check'
-																		size={11}
-																		color='#fff'
-																	/>
-																)}
-															</View>
-														)}
-														{doc.thumbnailUri ? (
-															<Image
-																source={{ uri: doc.thumbnailUri }}
-																style={styles.listThumb}
-															/>
-														) : (
-															<View style={styles.listThumbEmpty}>
-																<MaterialCommunityIcons
-																	name='file-pdf-box'
-																	size={26}
-																	color={theme.primaryBlue}
-																/>
-															</View>
-														)}
-														<View style={styles.listText}>
-															<Text
-																style={styles.listTitle}
-																numberOfLines={1}>
-																{doc.title}
-															</Text>
-															<Text style={styles.listSub}>
-																{doc.date} at {doc.time}
-															</Text>
-															<View style={styles.badgeRow}>
-																<View style={styles.badge}>
-																	<Text style={styles.badgeTxt}>
-																		{doc.pages} page{doc.pages > 1 ? 's' : ''}
-																	</Text>
-																</View>
-																<View
-																	style={[
-																		styles.badge,
-																		{
-																			backgroundColor:
-																				theme.secondaryTeal + '28',
-																			marginLeft: 6,
-																		},
-																	]}>
-																	<Text
-																		style={[
-																			styles.badgeTxt,
-																			{ color: theme.primaryTeal },
-																		]}>
-																		{doc.size} MB
-																	</Text>
-																</View>
-															</View>
-														</View>
-														{!selectionMode && (
-															<TouchableOpacity
-																style={styles.quickShare}
-																onPress={async () => {
-																	if (await Sharing.isAvailableAsync())
-																		await Sharing.shareAsync(doc.uri, {
-																			mimeType: 'application/pdf',
-																			UTI: 'com.adobe.pdf',
-																		});
-																}}>
-																<Feather
-																	name='share'
-																	size={15}
-																	color={theme.accent}
-																/>
-															</TouchableOpacity>
-														)}
-													</TouchableOpacity>
-												</AnimatedCard>
-											);
-										})}
+										{item.items.map((doc, idx) => (
+											<DocumentRow
+												key={doc.id}
+												doc={doc}
+												index={idx}
+												selected={!!selectedIds[doc.id]}
+												selectionMode={selectionMode}
+												styles={styles}
+												theme={theme}
+												onPress={handleDocPress}
+												onLongPress={handleDocLongPress}
+												onShare={shareDocument}
+											/>
+										))}
 									</View>
 								);
 							}
@@ -3064,29 +3019,37 @@ export default function App() {
 
 			<Text style={[styles.sectionTitle, { marginTop: 24 }]}>APPEARANCE</Text>
 			<View style={styles.card}>
-				<View style={styles.settingRow}>
-					<View style={styles.settingIcon}>
-						<Feather
-							name='moon'
-							size={16}
-							color={theme.primaryBlue}
-						/>
-					</View>
-					<View style={{ flex: 1, marginRight: 10 }}>
-						<Text style={styles.settingLabel}>Dark Mode</Text>
-						<Text style={styles.mutedText}>
-							Switch between dark and light theme
-						</Text>
-					</View>
-					<Switch
-						value={isDark}
-						onValueChange={toggleTheme}
-						trackColor={{
-							false: theme.surfaceHighlight,
-							true: theme.secondaryTeal,
-						}}
-						thumbColor={isDark ? theme.primaryTeal : '#888'}
-					/>
+				<Text style={[styles.mutedText, { marginBottom: 14 }]}>
+					System follows your device's light or dark setting.
+				</Text>
+				<View style={styles.segRow}>
+					{[
+						{ key: 'system', label: 'System', icon: 'smartphone' },
+						{ key: 'light', label: 'Light', icon: 'sun' },
+						{ key: 'dark', label: 'Dark', icon: 'moon' },
+					].map((opt) => {
+						const active = themeMode === opt.key;
+						return (
+							<TouchableOpacity
+								key={opt.key}
+								style={[styles.segBtn, active && styles.segBtnActive]}
+								onPress={() => setThemeMode(opt.key)}>
+								<Feather
+									name={opt.icon}
+									size={14}
+									color={active ? '#fff' : theme.textSecondary}
+								/>
+								<Text
+									style={[
+										styles.segTxt,
+										{ marginLeft: 6 },
+										active && { color: '#fff', fontWeight: '700' },
+									]}>
+									{opt.label}
+								</Text>
+							</TouchableOpacity>
+						);
+					})}
 				</View>
 			</View>
 			<Text style={[styles.sectionTitle, { marginTop: 28 }]}>
@@ -3197,8 +3160,8 @@ export default function App() {
 					<Text style={styles.settingLabel}>Documents</Text>
 					<Text style={styles.accentVal}>{savedDocuments.length} files</Text>
 				</View>
-				<View style={[styles.storageRow, { borderBottomWidth: 0 }]}>
-					<Text style={styles.settingLabel}>Total size</Text>
+				<View style={styles.storageRow}>
+					<Text style={styles.settingLabel}>PDFs</Text>
 					<Text style={styles.accentVal}>
 						{savedDocuments
 							.reduce((n, d) => n + parseFloat(d.size), 0)
@@ -3206,9 +3169,20 @@ export default function App() {
 						MB
 					</Text>
 				</View>
+				<View style={[styles.storageRow, { borderBottomWidth: 0 }]}>
+					<View style={{ flex: 1, marginRight: 10 }}>
+						<Text style={styles.settingLabel}>On disk</Text>
+						<Text style={styles.mutedText}>
+							Includes the page images that make documents editable
+						</Text>
+					</View>
+					<Text style={styles.accentVal}>
+						{diskUsageMB === null ? '…' : `${diskUsageMB} MB`}
+					</Text>
+				</View>
 			</View>
 
-			<Text style={styles.versionTxt}>SABUSCAN v3.2.0 • PRODUCTION</Text>
+			<Text style={styles.versionTxt}>PDFSCAN v4.0.0 • PRODUCTION</Text>
 		</ScrollView>
 	);
 
@@ -3341,6 +3315,9 @@ export default function App() {
 							placeholder='e.g. Invoice_April_2026'
 							placeholderTextColor={theme.textMuted}
 						/>
+						<Text style={[styles.nameLabel, { marginTop: 12 }]}>
+							ALSO EXPORT AS
+						</Text>
 						<View style={styles.formatRow}>
 							{['PDF', 'JPEG', 'PNG'].map((fmt) => (
 								<TouchableOpacity
@@ -3875,6 +3852,7 @@ export default function App() {
 	};
 
 	return (
+		<ErrorBoundary isDark={isDark}>
 		<ThemeContext.Provider value={{ theme, isDark, toggleTheme }}>
 			<SafeAreaProvider>
 				<SafeAreaView style={styles.safe}>
@@ -3989,6 +3967,27 @@ export default function App() {
 					{renderExportModal()}
 					{renderOcrModal()}
 					{renderPaywall()}
+					<PdfEditor
+						visible={editorVisible}
+						doc={editorDoc}
+						theme={theme}
+						isPro={isPro}
+						pdfQuality={pdfQuality}
+						onClose={() => setEditorVisible(false)}
+						onSaved={async (savedBase) => {
+							setEditorVisible(false);
+							await loadLibraryFiles();
+							setActiveTab('library');
+							showThemedAlert(
+								'Document updated',
+								`"${savedBase}" has been rebuilt with your changes.`,
+							);
+						}}
+						showAlert={showThemedAlert}
+						onRequestScan={scanPagesForEditor}
+						onRequestPick={pickPagesForEditor}
+					/>
+					{/* The alert sits last so it paints above the editor. */}
 					{renderCustomAlert()}
 					{!isPro && !isAdFree && (
 						<BannerAd
@@ -4010,5 +4009,6 @@ export default function App() {
 				</SafeAreaView>
 			</SafeAreaProvider>
 		</ThemeContext.Provider>
+		</ErrorBoundary>
 	);
 }
