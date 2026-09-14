@@ -46,17 +46,20 @@ export const PAGE_CSS =
 	'pt;width:auto;height:auto}';
 
 // ------------------------------------------------------------------
-// Free-tier credit line.
+// Free-tier mark: a small logo centred in the bottom margin.
 //
-// This replaces the old diagonal watermark. A band across the middle of an
-// invoice is the reason nobody sends the free tier's output — which killed
-// the only channel by which one user's PDF reaches the next user. A small
-// mark in the bottom margin gets sent, and every sent page is an impression.
+// It replaced a diagonal band across the middle of the page, which was the
+// reason nobody sent the free tier's output — and that killed the only
+// channel by which one user's PDF reaches the next. A quiet mark in the
+// margin gets sent, and every sent page is an impression.
+//
+// Logo only, no wording. The strip is sized to the glyph and the page
+// reserves exactly that much room, so the mark can never overlap the scan.
 //
 // It is inline SVG rather than a bitmap on purpose: WebKit vectorises it into
 // the PDF, so it stays crisp at any zoom and costs a few hundred bytes.
 // ------------------------------------------------------------------
-export const MARK_H = 26; // pt of page reserved for the mark
+export const MARK_H = 16; // pt of page reserved for the mark
 export const BRAND_BLUE = '#0373FD';
 
 const BRAND_MARK_SVG =
@@ -84,13 +87,12 @@ export const MARK_CSS =
 	'pt}' +
 	'.mk{position:absolute;left:0;right:0;bottom:0;height:' +
 	MARK_H +
-	'pt;display:flex;align-items:center;justify-content:center;gap:5pt;' +
-	"font:500 8pt -apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif;" +
-	'color:#8A9099;letter-spacing:.3pt}' +
-	'.mk svg{width:13pt;height:13pt;display:block;flex:none}';
+	'pt;display:flex;align-items:center;justify-content:center}' +
+	// Slightly transparent so it reads as a quiet credit rather than as
+	// content someone has to look past.
+	'.mk svg{width:9pt;height:9pt;display:block;opacity:.75}';
 
-export const BRAND_MARK_HTML =
-	'<div class="mk">' + BRAND_MARK_SVG + '<span>Scanned with PDFScan</span></div>';
+export const BRAND_MARK_HTML = '<div class="mk">' + BRAND_MARK_SVG + '</div>';
 
 // HTML entity-escape. Document titles reach the print HTML, and a title
 // containing < or & would otherwise break the markup or inject nodes.
