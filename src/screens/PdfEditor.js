@@ -16,7 +16,6 @@ import {
 	FlatList,
 	Image,
 	Modal,
-	Platform,
 	ScrollView,
 	StyleSheet,
 	Text,
@@ -26,7 +25,7 @@ import {
 	useWindowDimensions,
 } from 'react-native';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
 	duplicatePageAt,
@@ -73,6 +72,10 @@ export default function PdfEditor({
 	onRequestPick,
 }) {
 	const { width } = useWindowDimensions();
+	// Read the insets directly instead of using SafeAreaView. A SafeAreaView
+	// rendered inside a Modal gets no top inset on iOS — the modal is hosted in
+	// its own window — so the header drew underneath the status bar.
+	const insets = useSafeAreaInsets();
 	const styles = useMemo(() => makeStyles(theme), [theme]);
 	const columns = columnsFor(width);
 
@@ -323,7 +326,14 @@ export default function PdfEditor({
 			animationType='slide'
 			onRequestClose={confirmClose}
 			statusBarTranslucent>
-			<SafeAreaView style={styles.root} edges={['top', 'bottom']}>
+			<View
+				style={[
+					styles.root,
+					{
+						paddingTop: insets.top,
+						paddingBottom: Math.max(insets.bottom, 8),
+					},
+				]}>
 				{/* Header */}
 				<View style={styles.header}>
 					<TouchableOpacity
@@ -494,7 +504,7 @@ export default function PdfEditor({
 						</Text>
 					</View>
 				)}
-			</SafeAreaView>
+			</View>
 		</Modal>
 	);
 }
@@ -634,7 +644,8 @@ const makeStyles = (theme) =>
 			gap: 10,
 			paddingHorizontal: 14,
 			paddingTop: 10,
-			paddingBottom: Platform.OS === 'android' ? 14 : 6,
+			// The root View already applies the bottom safe-area inset.
+			paddingBottom: 6,
 			borderTopWidth: StyleSheet.hairlineWidth,
 			borderTopColor: theme.surfaceHighlight,
 			backgroundColor: theme.background,
