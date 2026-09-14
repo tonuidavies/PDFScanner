@@ -1,6 +1,15 @@
-# RevenueCat Setup — PDFScan Pro (one-time unlock)
+# RevenueCat Setup — PDFScan Pro
 
-Target: a **non-consumable** $4.99 purchase that removes ads and the PDF watermark, forever.
+Two ways to buy the same thing:
+
+| Product | Type | Price | Product ID |
+|---|---|---|---|
+| PDFScan Pro Monthly | **Auto-renewable subscription** | $0.49 / month | `com.sabu.scanner.pro.monthly` |
+| PDFScan Pro Lifetime | **Non-consumable** | $4.99 once | `com.sabu.scanner.pro` |
+
+Both unlock the same `pro` entitlement, so nothing in the app cares which was bought. Both remove ads and the PDF footer mark.
+
+> **The monthly subscription brings Guideline 3.1.2 into scope**, which the non-consumable alone avoided. The app side is already handled — the paywall shows the price, the period, the renewal terms, and links to Terms of Use and Privacy Policy. The App Store Connect side is section 1.5 below, and it is the part Apple rejects people for.
 
 Do these phases **in order**. RevenueCat imports products from App Store Connect, so ASC has to be right first.
 
@@ -34,7 +43,7 @@ The form takes about a minute — confirm proceeds were under $1M last calendar 
 
 **Timing matters.** Enrollment takes effect from the **start of the following month**, so enrolling now covers you before any real sales land. On a $4.99 unlock: **$4.24** to you at 15% versus **$3.49** at 30%.
 
-### 1.3 Create the product
+### 1.3 Create the lifetime product
 
 **Your app → Monetization → In-App Purchases → +**
 
@@ -52,7 +61,31 @@ Then fill in, on the same page:
 
 Product ID is permanent — it cannot be renamed or reused after creation. Get it right.
 
-### 1.4 App-Specific Shared Secret
+### 1.4 Create the monthly subscription
+
+**Your app → Monetization → Subscriptions → Create** a Subscription Group first (name it `PDFScan Pro` — the group name is user-visible), then add a subscription inside it:
+
+| Field | Value |
+|---|---|
+| Reference Name | `PDFScan Pro Monthly` |
+| Product ID | `com.sabu.scanner.pro.monthly` |
+| Duration | **1 month** |
+| Price | $0.49 |
+
+Then, on the same page: **Localization** → Display Name `PDFScan Pro Monthly`, Description `Removes ads and the PDF footer mark.` And a **Review screenshot** of the paywall, same as the lifetime product.
+
+Product IDs are permanent — they cannot be renamed or reused after creation.
+
+### 1.5 Guideline 3.1.2 metadata — this is the part that gets rejected
+
+In **App Information**, both of these must be filled in:
+
+- **Privacy Policy URL** — you have the Notion one.
+- **Terms of Use (EULA)** — leave blank to use Apple's standard EULA, which is what the app links to. If you paste a custom one, change `TERMS_OF_USE_URL` in `App.js` to match, or the app and the listing will disagree.
+
+Apple checks that the binary shows, on the purchase screen itself: subscription title, length, price per period, and that it auto-renews. The paywall already does this. Do not remove that small-print block.
+
+### 1.6 App-Specific Shared Secret
 
 **Your app → App Information → App-Specific Shared Secret** → generate and copy it. RevenueCat needs this to validate receipts.
 
@@ -65,16 +98,19 @@ Product ID is permanent — it cannot be renamed or reused after creation. Get i
 Your project already detected the App Store app. Open **Project Settings → Apps → your iOS app** and confirm:
 
 - **Bundle ID**: `com.sabu.scanner`
-- **App-Specific Shared Secret**: paste from step 1.4
+- **App-Specific Shared Secret**: paste from step 1.6
 - **In-App Purchase Key** / App Store Connect API key: connected
 
-### 2.2 Product
+### 2.2 Products
 
-**Product catalog → Products → + New**
+**Product catalog → Products → + New**, twice:
 
-- Store: App Store
-- Product ID: `com.sabu.scanner.pro` — must match ASC exactly
-- Type: **Lifetime** (RevenueCat's label for a non-consumable)
+| Product ID | RevenueCat type |
+|---|---|
+| `com.sabu.scanner.pro` | **Lifetime** (its label for a non-consumable) |
+| `com.sabu.scanner.pro.monthly` | **Monthly** |
+
+Both must match App Store Connect exactly.
 
 If ASC hasn't finished processing the product it won't import yet. Wait and retry rather than typing it manually.
 
@@ -83,14 +119,21 @@ If ASC hasn't finished processing the product it won't import yet. Wait and retr
 **Product catalog → Entitlements → + New**
 
 - Identifier: **`pro`** ← the code checks this exact string
-- Attach the `com.sabu.scanner.pro` product to it
+- Attach **both** products to it: `com.sabu.scanner.pro` and
+  `com.sabu.scanner.pro.monthly`
+
+Attaching both is what makes the rest of the app indifferent to which one was
+bought — `isPro` is a single entitlement check either way.
 
 ### 2.4 Offering
 
 **Product catalog → Offerings → + New**
 
 - Identifier: `default`
-- Add a **Package** → type **Lifetime** → attach the product
+- Add a **Package** → type **Monthly** → attach `com.sabu.scanner.pro.monthly`
+- Add a **Package** → type **Lifetime** → attach `com.sabu.scanner.pro`
+
+The app reads `offering.monthly` and `offering.lifetime` by name. It deliberately does **not** fall back to `availablePackages[0]`: that would let a dashboard edit change which product is charged without going through app review, and with a subscription in the mix that could mean charging a recurring price where a one-time one was shown.
 
 ### 2.5 API key
 
@@ -100,18 +143,22 @@ That key is safe to ship in the app binary — it's a public key, not a secret. 
 
 ---
 
-## Phase 3 — Code (I do this)
+## Phase 3 — Code — ✅ DONE
 
-Once you send me the API key:
+Already in `App.js`:
 
-- `npx expo install react-native-purchases`
-- Configure the SDK on launch
-- Replace the `isPro` stub in `App.js` with the real entitlement check
-- Build the paywall screen
-- Add **Restore Purchases** — Apple requires this for non-consumables and App Review tests it specifically
-- Gate the watermark and ads on `isPro`
+- `react-native-purchases` configured on launch; every failure is non-fatal, so
+  a RevenueCat outage leaves the user on the free tier rather than breaking the app
+- `isPro` driven by the real `pro` entitlement, with a customer-info listener
+- Paywall offering **both** plans, with the plan picker defaulting to whichever
+  package actually exists
+- Guideline 3.1.2 small print, Terms of Use and Privacy Policy links
+- **Restore Purchases** in both the paywall and Settings
+- Ads and the footer mark gated on `isPro`
 
-I'm proposing the core `react-native-purchases` only, not `react-native-purchases-ui`. Their hosted paywalls are nice but add another native module, and your last four build failures were all native dependency problems. A hand-built paywall for one product is maybe 80 lines and has no extra build surface.
+Core `react-native-purchases` only, not `react-native-purchases-ui`: the hosted
+paywalls are nice but add another native module, and the last four build
+failures were all native dependency problems.
 
 ---
 
@@ -124,20 +171,35 @@ You cannot test IAP in Expo Go or on a normal release build.
 3. On the device: **Settings → Developer → Sandbox Apple Account** → sign in as the tester
 4. Purchases will show `[Environment: Sandbox]` in the confirmation dialog and cost nothing
 
-Test both a fresh purchase **and** Restore Purchases after deleting and reinstalling. Restore is what App Review checks hardest on non-consumables.
+Test all three: a fresh **monthly** purchase, a fresh **lifetime** purchase, and
+Restore Purchases after deleting and reinstalling. Restore is what App Review
+checks hardest on non-consumables.
+
+Sandbox subscriptions renew on an accelerated clock — a 1-month subscription
+renews every 5 minutes and auto-cancels after 6 renewals — so you can watch a
+renewal happen rather than assuming it will.
 
 ---
 
 ## Submission notes for 1.1
 
-Because this is a **non-consumable**, you skip almost all of Guideline 3.1.2 — no Terms of Use (EULA) URL, no renewal disclosure, no subscription-length text. That's precisely why it was chosen over the $1/month subscription.
+**Guideline 3.1.2 now applies.** Offering the monthly subscription brings back
+everything the non-consumable alone avoided. The app side is done — the paywall
+shows the subscription title, the period, the price per period, the
+auto-renewal sentence, and links to Terms of Use and Privacy Policy. What Apple
+additionally checks is the listing metadata in step 1.5.
+
+If you ever drop the monthly product, you can drop that small print with it.
+While it ships, leave it alone — removing it is a rejection.
 
 Still required:
 
-- [ ] **Restore Purchases** button, easy to find
+- [ ] **Restore Purchases** button, easy to find — in the paywall and in Settings
 - [ ] Price shown clearly before purchase
 - [ ] Privacy Policy link (you already have the Notion one)
-- [ ] The IAP product submitted **for review alongside the build** — select it in the version's In-App Purchases section, or Apple reviews the app without it and the purchase fails in production
+- [ ] Terms of Use (EULA) link — Apple's standard one unless you host your own
+- [ ] Renewal terms on the purchase screen — already in the paywall
+- [ ] **Both products** submitted for review alongside the build — select them in the version's In-App Purchases and Subscriptions sections, or Apple reviews the app without them and purchases fail in production
 
 ### What "Pro" gets, exactly
 
@@ -145,9 +207,19 @@ Keep this honest and consistent with the paywall copy:
 
 | | Free | Pro |
 |---|---|---|
-| Scan, OCR, export | Yes | Yes |
+| Scan, OCR, export, page editor, PDF reader | Yes | Yes |
 | Banner + interstitial ads | Yes | None |
-| PDF watermark | Yes | None |
-| Price | Free | $4.99 once |
+| PDF footer mark | Yes | None |
+| Price | Free | $0.49/month or $4.99 once |
+
+Nothing that works today is taken away. The only differences are the ads and
+the small logo in the bottom margin — which matters, because removing existing
+free functionality to sell it back is a Guideline 3.1.1 problem and generates
+1-star reviews besides.
+
+One consequence worth planning for: the footer mark is now a small logo rather
+than a wordmark, so it is much less of a reason to pay. The ads carry the Pro
+pitch. If you want more Pro value later, add genuinely new capability rather
+than taking anything out of the free tier.
 
 Nothing that works today gets taken away except the watermark. That matters — removing existing free functionality to sell it back is a Guideline 3.1.1 problem, and it generates 1-star reviews besides.
