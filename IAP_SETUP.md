@@ -132,6 +132,23 @@ bought — `isPro` is a single entitlement check either way.
 - Identifier: `default`
 - Add a **Package** → type **Monthly** → attach `com.sabu.scanner.pro.monthly`
 - Add a **Package** → type **Lifetime** → attach `com.sabu.scanner.pro`
+- Make sure this offering is marked **Current**
+
+Three things here are load-bearing, and each one fails silently:
+
+1. **The package type must be Monthly, not a custom identifier.** RevenueCat's
+   `offering.monthly` accessor resolves the package whose identifier is
+   `$rc_monthly`, which is what picking the *Monthly* type sets. Name it
+   anything else — `monthly_49`, `basic` — and `offering.monthly` is `null`,
+   the plan row never renders, and the paywall looks like the product was
+   never created. Same for `$rc_lifetime`.
+2. **The offering must be Current.** The app reads `offerings.current` first
+   and only falls back to `offerings.all.default`, so an offering that exists
+   but is not current still works here — but every RevenueCat example assumes
+   current, and anything you add later will not.
+3. **The entitlement, not the package, is what unlocks Pro.** A package that
+   is in the offering but not attached to `pro` will sell perfectly and unlock
+   nothing.
 
 The app reads `offering.monthly` and `offering.lifetime` by name. It deliberately does **not** fall back to `availablePackages[0]`: that would let a dashboard edit change which product is charged without going through app review, and with a subscription in the mix that could mean charging a recurring price where a one-time one was shown.
 
